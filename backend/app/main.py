@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import init_db
-from app.routes import chat, health, knowledge
+from app.routes import chat, health, knowledge, resume
 
 logger = logging.getLogger("spidey")
 
@@ -37,10 +37,11 @@ def create_app():
     app.include_router(chat.router)
     app.include_router(health.router)
     app.include_router(knowledge.router)
+    app.include_router(resume.router)
 
     @app.get("/")
     async def root():
-        return {"service": "spidey", "phase": 3}
+        return {"service": "spidey", "phase": 4}
 
     return app
 

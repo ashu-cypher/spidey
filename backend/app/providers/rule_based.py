@@ -35,12 +35,41 @@ _SUMMARIZE_DOC = re.compile(
     r"|\bsummarize\s+my\s+(\S+)",
     re.IGNORECASE,
 )
+# Resume intelligence (Phase 4) — checked before the generic intents below so
+# "analyze my resume" / "improve my CV" always win over chat_fallback.
+_RESUME_IMPROVE = re.compile(
+    r"\b(improve|rewrite|polish|fix|upgrade|strengthen|tailor)\b"
+    r".{0,40}\b(my\s+)?(resume|cv)\b",
+    re.IGNORECASE,
+)
+_RESUME_ANALYZE = re.compile(
+    r"\b(analy[sz]e|analysis|check|review|audit|critique|feedback\s+on|look\s+at)\b"
+    r".{0,40}\b(my\s+)?(resume|cv)\b"
+    r"|\b(my\s+)?(resume|cv)\s+(analysis|review|feedback)\b",
+    re.IGNORECASE,
+)
 
 
 class RuleBasedProvider(AIProvider):
     name = "rule_based"
 
     def _classify(self, text: str) -> dict:
+        if _RESUME_IMPROVE.search(text):
+            return {
+                "intent": "resume_improve",
+                "requires_memory": True,
+                "requires_tools": True,
+                "tools": ["resume"],
+                "response_mode": "grounded",
+            }
+        if _RESUME_ANALYZE.search(text):
+            return {
+                "intent": "resume_analyze",
+                "requires_memory": True,
+                "requires_tools": True,
+                "tools": ["resume"],
+                "response_mode": "grounded",
+            }
         if _SUMMARIZE_DOC.search(text):
             return {
                 "intent": "summarize_document",
@@ -133,10 +162,10 @@ class RuleBasedProvider(AIProvider):
         if intent == "help":
             return (
                 "I can calculate, remember things, manage tasks, search your "
-                "uploaded documents, and chat. Try: 'calculate 12 * 8', "
-                "'remember that I am learning Python', "
+                "uploaded documents, analyze your resume, and chat. Try: "
+                "'calculate 12 * 8', 'remember that I am learning Python', "
                 "'search my documents for the refund policy', "
-                "or 'create a task for tomorrow'."
+                "'analyze my resume', or 'create a task for tomorrow'."
             )
         return (
             "Noted. Give me something concrete — a calculation, "

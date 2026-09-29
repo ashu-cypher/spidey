@@ -218,9 +218,25 @@ class ResumeVersion(Base):
     user_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("users.id"), default="local", index=True
     )
+    # Monotonic per-user counter — versions are append-only, never mutated.
+    version_number: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     label: Mapped[str] = mapped_column(String(128), default="")
+    # Full CV text. The Phase 4 spec calls this field ``content_text``.
     content: Mapped[str] = mapped_column(Text)
+    source_filename: Mapped[str] = mapped_column(String(512), default="")
+    # How this version came to be: "upload" | "improvement" | "job_match",
+    # or the id of the version it was restored/copied from.
+    created_from: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+    @property
+    def content_text(self) -> str:
+        """Spec name for the full CV text (stored in ``content``)."""
+        return self.content
+
+    @content_text.setter
+    def content_text(self, value: str) -> None:
+        self.content = value
 
 
 class Setting(Base):

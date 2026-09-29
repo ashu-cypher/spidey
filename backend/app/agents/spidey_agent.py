@@ -9,11 +9,14 @@ from app.tools.base import BaseTool, ToolError
 
 _FALLBACK_REPLY = "Spidey couldn't complete that step."
 
+NO_CV_REPLY = "I don't have your CV yet — upload it in the Resume tab."
+
 _VERIFY_KEYS: dict[str, tuple[str, ...]] = {
     "calculator": ("result",),
     "memory": ("results", "saved"),
     "tasks": ("task", "tasks"),
     "rag": ("results", "documents"),
+    "resume": ("analysis", "suggestions", "job_match", "versions", "version"),
 }
 
 # Cosine-similarity score below this means the retrieval is too weak to trust.
@@ -27,7 +30,7 @@ LOW_CONFIDENCE_REPLY = (
 
 
 class SpideyAgent:
-    MAX_AGENT_STEPS = 8
+    MAX_AGENT_STEPS = 9
 
     def __init__(self, provider: AIProvider, tools: dict[str, BaseTool]) -> None:
         self.provider = provider
@@ -48,12 +51,13 @@ class SpideyAgent:
             return exc.user_message
         return _FALLBACK_REPLY
 
-    async def run(self, message: str, run, engine) -> str:
+    def _stepper(self, run, engine):
+        """Build the visible-step recorder shared by run() and _run_resume_steps.
+
+        Every step is recorded on the workflow engine (WAITING -> RUNNING ->
+        COMPLETED/FAILED) so the WorkflowPanel shows the full pipeline live.
+        """
         step_count = 0
-        tool_results: dict[str, dict] = {}
-        classification: dict | None = None
-        facts = ""
-        mems: list[dict] = []
 
         async def _step(
             name: str,
@@ -80,6 +84,15 @@ class SpideyAgent:
             )
             return out
 
+        return _step
+
+    async def run(self, message: str, run, engine) -> str:
+        _step = self._stepper(run, engine)
+        tool_results: dict[str, dict] = {}
+        classification: dict | None = None
+        facts = ""
+        mems: list[dict] = []
+
         try:
             classification = await _step(
                 "Understand request",
@@ -87,6 +100,12 @@ class SpideyAgent:
                 lambda: self.provider.aclassify_intent(message),
             )
             intent = classification.get("intent", "chat_fallback")
+            if intent in ("resume_analyze", "resume_improve"):
+                # Dedicated 9-stage resume pipeline ("Understand request" is
+                # already recorded above as stage 1).
+                return await self._run_resume_steps(
+                    _step, message, intent, run, engine
+                )
             plan = build_plan(classification)
 
             if classification.get("requires_memory"):
@@ -135,6 +154,150 @@ class SpideyAgent:
             engine.finish_run(run.workflow_id, "failed", result=_FALLBACK_REPLY)
             return _FALLBACK_REPLY
 
+    async def _run_resume_steps(self, _step, message: str, intent: str, run, engine) -> str:
+        """Phase 4 resume pipeline — nine visible stages.
+
+        Understand request -> Read resume -> Analyze sections ->
+        Identify weaknesses -> Retrieve memory -> Generate suggestions ->
+        Verify results -> Compose response -> Save memory.
+
+        When no CV is stored, the pipeline short-circuits after "Read resume"
+        with a clean user message instead of failing.
+        """
+        try:
+            latest = await _step(
+                "Read resume",
+                "tool",
+                lambda: self.tools["resume"].execute(action="latest"),
+                input_data={"action": "latest"},
+            )
+            version = (latest or {}).get("version")
+            if not version:
+                facts = self._compose_facts("resume_empty", message, {}, [])
+                response = await _step(
+                    "Respond",
+                    "respond",
+                    lambda: self.provider.agenerate(message, context=facts),
+                    input_data={"facts": facts[:500]},
+                )
+                engine.finish_run(run.workflow_id, "completed", result=response)
+                return response
+
+            version_id = version["id"]
+            analysis_out = await _step(
+                "Analyze sections",
+                "tool",
+                lambda: self.tools["resume"].execute(
+                    action="analyze", version_id=version_id
+                ),
+                input_data={"action": "analyze", "version_id": version_id},
+            )
+            analysis = analysis_out.get("analysis", {})
+            weaknesses = await _step(
+                "Identify weaknesses",
+                "analysis",
+                lambda: self._rank_weaknesses(analysis),
+                input_data={"issues": len(analysis.get("issues", []))},
+            )
+            mems = await _step(
+                "Retrieve memory",
+                "memory",
+                lambda: self.memory.retrieve_relevant(message),
+            )
+            improve_out = await _step(
+                "Generate suggestions",
+                "tool",
+                lambda: self.tools["resume"].execute(
+                    action="improve", version_id=version_id
+                ),
+                input_data={"action": "improve", "version_id": version_id},
+            )
+            await _step(
+                "Verify results",
+                "verify",
+                lambda: self._verify(
+                    {
+                        "resume_analyze": analysis_out,
+                        "resume_improve": improve_out,
+                    }
+                ),
+            )
+            tool_results = {
+                "resume": {
+                    "analysis": analysis,
+                    "weaknesses": weaknesses.get("weaknesses", []),
+                    "improve": improve_out,
+                    "version": version,
+                }
+            }
+            facts = self._compose_facts(intent, message, tool_results, mems)
+            response = await _step(
+                "Compose response",
+                "respond",
+                lambda: self.provider.agenerate(message, context=facts),
+                input_data={"facts": facts[:500]},
+            )
+            await _step(
+                "Save memory",
+                "memory_update",
+                lambda: self._save_resume_memory(version, analysis, improve_out),
+            )
+            engine.finish_run(run.workflow_id, "completed", result=response)
+            return response
+        except Exception:
+            engine.finish_run(run.workflow_id, "failed", result=_FALLBACK_REPLY)
+            return _FALLBACK_REPLY
+
+    @staticmethod
+    async def _rank_weaknesses(analysis: dict) -> dict:
+        """Order analysis issues by severity for the 'Identify weaknesses' step."""
+        severity = {
+            "repetition": 0,
+            "missing_measurable": 1,
+            "weak_verb": 2,
+            "vague_statement": 3,
+        }
+        issues = sorted(
+            analysis.get("issues", []),
+            key=lambda i: severity.get(i.get("type"), 9),
+        )
+        return {
+            "weaknesses": [
+                {
+                    "type": i.get("type"),
+                    "detail": i.get("detail"),
+                    "excerpt": i.get("excerpt"),
+                }
+                for i in issues[:8]
+            ],
+            "count": len(issues),
+        }
+
+    async def _save_resume_memory(
+        self, version: dict, analysis: dict, improve_out: dict
+    ) -> dict:
+        """Persist a short summary of the resume analysis for future chats."""
+        try:
+            gaps = ", ".join(analysis.get("missing_info", [])[:3]) or "none noted"
+            content = (
+                f"Resume analyzed (v{version.get('version_number')}): quality "
+                f"{analysis.get('quality_score')}/100, ATS "
+                f"{analysis.get('ats', {}).get('score')}/100; "
+                f"{len(improve_out.get('suggestions', []))} rewrite suggestions "
+                f"saved as v{improve_out.get('new_version_number')}. "
+                f"Gaps: {gaps}."
+            )
+            await self.tools["memory"].execute(
+                action="save",
+                content=content,
+                category="career",
+                importance=0.7,
+            )
+            return {"saved": True}
+        except Exception:
+            # Memory must never fail the resume pipeline.
+            return {"saved": False, "reason": "memory store unavailable"}
+
     async def _verify(self, tool_results: dict[str, dict]) -> dict:
         for tool_name, result in tool_results.items():
             if not isinstance(result, dict) or not result:
@@ -171,6 +334,10 @@ class SpideyAgent:
             # summarize_document benefits from more context than a plain search
             limit = 10 if intent == "summarize_document" else 5
             return {"action": "search", "query": message, "limit": limit}
+        if tool == "resume":
+            # The dedicated resume pipeline builds its own args per stage;
+            # this default keeps the generic loop safe.
+            return {"action": "latest"}
         return {}
 
     @staticmethod
@@ -239,7 +406,57 @@ class SpideyAgent:
             return "No tasks yet — say 'create a task' to add one."
         if intent in ("knowledge_search", "summarize_document"):
             return SpideyAgent._compose_rag_facts(tool_results)
+        if intent in ("resume_analyze", "resume_improve"):
+            return SpideyAgent._compose_resume_facts(intent, tool_results)
+        if intent == "resume_empty":
+            return NO_CV_REPLY
         return ""
+
+    @staticmethod
+    def _compose_resume_facts(intent: str, tool_results: dict[str, dict]) -> str:
+        """Facts for resume intents — analysis summary, never invented content."""
+        r = tool_results.get("resume", {})
+        analysis = r.get("analysis", {})
+        improve_out = r.get("improve", {})
+        version = r.get("version", {})
+        content = analysis.get("content", {})
+        ats = analysis.get("ats", {})
+        lines = [
+            f"Resume analysis — v{version.get('version_number')} "
+            f"\"{version.get('label')}\":"
+        ]
+        lines.append(
+            f"Quality score: {analysis.get('quality_score')}/100 | "
+            f"ATS score: {ats.get('score')}/100"
+        )
+        found = content.get("sections_found", [])
+        lines.append("Sections found: " + (", ".join(found) if found else "none"))
+        missing = analysis.get("missing_info", [])
+        if missing:
+            lines.append("Gaps: " + "; ".join(missing))
+        weaknesses = r.get("weaknesses", [])[:5]
+        if weaknesses:
+            lines.append("Top weaknesses:")
+            for i, w in enumerate(weaknesses, 1):
+                lines.append(f"  {i}. [{w.get('type')}] {w.get('detail')}")
+        suggestions = improve_out.get("suggestions", [])
+        new_v = improve_out.get("new_version_number")
+        if intent == "resume_improve" and suggestions:
+            lines.append(f"Rewrite suggestions (saved as v{new_v}):")
+            for s in suggestions[:6]:
+                lines.append(
+                    f"  - \"{s.get('original')}\" → \"{s.get('improved')}\" "
+                    f"({s.get('reason')})"
+                )
+            note = improve_out.get("note")
+            if note:
+                lines.append(note)
+        elif suggestions:
+            lines.append(
+                f"{len(suggestions)} rewrite suggestions saved as v{new_v} — "
+                "see the Resume tab for the full list."
+            )
+        return "\n".join(lines)
 
     @staticmethod
     def _compose_rag_facts(tool_results: dict[str, dict]) -> str:

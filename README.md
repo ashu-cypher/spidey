@@ -52,7 +52,8 @@ Architecture:
 - Basic chat with Server-Sent Events (SSE) live updates
 - AI provider abstraction (`rule_based` default; `openai`, `ollama` optional)
 - `SpideyAgent`: intent classification → memory retrieval → plan → tool
-  execution → verification → response → memory update (`MAX_AGENT_STEPS=8`)
+  execution → verification → response → memory update (`MAX_AGENT_STEPS=9`;
+  the Phase 4 resume pipeline uses 9 visible stages)
 - Tool system with common interface: `calculator`, `memory`, `tasks`
 - Workflow engine: every agent run is a `WorkflowRun` of `WorkflowStep`s
   (WAITING / RUNNING / COMPLETED / FAILED) with timing, visible live in the UI
@@ -127,12 +128,76 @@ Architecture:
   date / status / chunk count / delete), search box with cited results
   (`[source, chunk N]` + score). `npm run build` passes.
 
+## Phase 4 — Resume intelligence (implemented)
+
+- **Rule-based analysis — honest by construction.** Everything is regex /
+  token-overlap heuristics in `backend/app/tools/resume.py`; there is no ML
+  model and no LLM requirement. The tool **never invents**: analysis only
+  inspects existing text, improvement rewrites only *rephrase* existing
+  bullets (stronger action verbs, filler trimmed), and job-match reports
+  matched vs missing skills explicitly — it never claims you have a skill the
+  CV doesn't evidence.
+- **ResumeTool** (`"resume"` in `TOOL_REGISTRY`, verify keys `("analysis",
+  "suggestions", "job_match", "versions", "version")`): `parse` (regex section
+  detection — summary/education/experience/projects/skills/certifications/
+  achievements with header variants like "Work Experience"/"Employment
+  History" — plus contact extraction and truncated `raw_text`), `analyze`
+  (sections found/missing, issues `weak_verb` / `vague_statement` /
+  `repetition` (token-Jaccard ≥ 0.5) / `missing_measurable`, 0–100 quality
+  score, ATS panel with keyword coverage + formatting risks + score, and an
+  explicit `missing_info[]` gap list), `improve` (up to 8 rephrase
+  suggestions; a test-enforced invariant guarantees every skill token in a
+  suggestion already exists in the CV), `job_match` (transparent lexicon +
+  alias extractor over the JD; matched/missing/unclear skills, relevant
+  experience, honest improvements, keywords-to-consider, 0–100 match score),
+  `create_version` / `latest` / `list`.
+- **Provider-assisted polish (graceful):** `improve` tries
+  `provider.agenerate` for rewrite polish when the provider isn't
+  `rule_based`, but any failure — offline provider, over-long output, or
+  output that adds a skill token not in the original bullet — falls back to
+  the pure rule-based rewrite. The action never fails because the LLM is
+  unavailable.
+- **Versioning is append-only:** `resume_versions` gained `version_number`
+  (per-user monotonic), `source_filename`, `created_from`
+  (`"upload"`/`"improvement"`/`"job_match"`/source-version id) via Alembic
+  revision `c9f7c2d91e5b` (backfills per-user row numbers). `content` holds
+  the full CV text (`content_text` is a read/write alias). Nothing is ever
+  overwritten — restore creates a new row.
+- **Resume endpoints** (`backend/app/routes/resume.py`): `POST
+  /api/resume/upload` (multipart ≤ 10 MB, `.pdf`/`.docx`/`.txt` → version 1),
+  `POST /api/resume/analyze`, `POST /api/resume/job-match` (also saves a
+  job-specific version), `POST /api/resume/versions/{id}/improve`,
+  `GET /api/resume/versions`, `GET /api/resume/versions/{id}`,
+  `POST /api/resume/versions/{id}/restore` (new row, never mutates),
+  `GET /api/resume/versions/{id}/download?format=txt|md`,
+  `GET /api/resume/versions/{id}/compare/{other_id}` (difflib unified diff).
+- **Agent wiring:** new intents `resume_analyze` ("analyze my resume",
+  "check my CV") and `resume_improve` ("improve my CV") run a dedicated
+  9-stage pipeline with visible steps: Understand request → Read resume →
+  Analyze sections → Identify weaknesses → Retrieve memory → Generate
+  suggestions → Verify results → Compose response → Save memory
+  (`MAX_AGENT_STEPS` raised 8 → 9). With no CV stored, chat replies exactly:
+  "I don't have your CV yet — upload it in the Resume tab." Job-match via
+  chat is intentionally **not** wired — the Resume tab is the primary path
+  (the JD is long-form input that belongs in a textarea, not a chat box).
+- **Resume tab (frontend):** upload card, analysis report (sections checklist,
+  quality/ATS score badges, issues grouped by type, missing-info callouts,
+  rewrite suggestions), job-match view (version picker + JD textarea +
+  matched/missing/unclear chips, relevant experience, improvements,
+  keywords), version history (list, restore-as-new, txt/md download,
+  two-version diff). `npm run build` passes.
+- **Tests:** `backend/tests/test_resume.py` — 17 tests (section detection,
+  weak-verb/vague/missing-measurable/repetition detection, the no-invention
+  invariant, append-only versioning incl. restore, job-match matched/missing
+  split, no-CV clean message, the 9-step pipeline). 58/58 green.
+
 ## Roadmap
 
 - **Phase 2 — Memory:** PostgreSQL, memory tables, retrieval, management UI ✅
 - **Phase 3 — RAG:** document upload, chunking, embeddings, pgvector, sources ✅
   (embeddings on DEV hashing fallback — real semantic model is a future swap-in)
-- **Phase 4 — Resume intelligence:** CV parsing, analysis, job matching, versioning
+- **Phase 4 — Resume intelligence:** CV parsing, analysis, job matching, versioning ✅
+  (rule-based analysis; rewrites are rephrasings only; job-match lives in the tab)
 - **Phase 5 — Tools:** reminders, web search, document tools, code tool
 - **Phase 6 — Voice:** speech-to-text, TTS, microphone UI
 - **Phase 7 — Advanced agent:** multi-tool planning, retries, workflow history

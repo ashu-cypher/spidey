@@ -167,3 +167,148 @@ export async function searchDocuments(
   return data.results;
 }
 
+
+// --- Resume (Phase 4) -------------------------------------------------------
+
+export interface ResumeVersion {
+  id: string;
+  version_number: number;
+  label: string;
+  source_filename: string;
+  created_from: string | null;
+  created_at: string | null;
+  content: string;
+}
+
+export interface ResumeIssue {
+  type: string;
+  detail: string;
+  excerpt: string;
+}
+
+export interface ResumeAnalysis {
+  version_id: string | null;
+  version_number: number | null;
+  content: {
+    sections_found: string[];
+    sections_missing: string[];
+    bullet_count: number;
+    word_count: number;
+  };
+  issues: ResumeIssue[];
+  issue_counts: Record<string, number>;
+  quality_score: number;
+  ats: {
+    sections_ok: boolean;
+    contact_ok: boolean;
+    keyword_coverage: number;
+    formatting_risks: string[];
+    score: number;
+  };
+  missing_info: string[];
+  contact: {
+    name: string;
+    email: string | null;
+    phone: string | null;
+    linkedin: string | null;
+    github: string | null;
+    location: string | null;
+  };
+}
+
+export interface ResumeSuggestion {
+  original: string;
+  improved: string;
+  reason: string;
+}
+
+export interface UnclearSkill {
+  jd_skill: string;
+  cv_skill: string;
+  note: string;
+}
+
+export interface JobMatch {
+  matched_skills: string[];
+  missing_skills: string[];
+  unclear_skills: UnclearSkill[];
+  relevant_experience: string[];
+  improvements: string[];
+  keywords_to_consider: string[];
+  match_score: number;
+  jd_skill_count: number;
+}
+
+export async function uploadResume(file: File): Promise<ResumeVersion> {
+  const form = new FormData();
+  form.append('file', file);
+  const res = await fetch('/api/resume/upload', { method: 'POST', body: form });
+  const data = await json<{ version: ResumeVersion }>(res);
+  return data.version;
+}
+
+export async function analyzeResume(versionId: string): Promise<ResumeAnalysis> {
+  const res = await fetch('/api/resume/analyze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ version_id: versionId }),
+  });
+  const data = await json<{ analysis: ResumeAnalysis }>(res);
+  return data.analysis;
+}
+
+export async function improveResume(
+  versionId: string,
+): Promise<{
+  suggestions: ResumeSuggestion[];
+  new_version_id: string;
+  new_version_number: number;
+  note: string;
+}> {
+  const res = await fetch(
+    `/api/resume/versions/${encodeURIComponent(versionId)}/improve`,
+    { method: 'POST' },
+  );
+  return json(res);
+}
+
+export async function jobMatchResume(
+  versionId: string,
+  jobDescription: string,
+): Promise<{ job_match: JobMatch; version: ResumeVersion }> {
+  const res = await fetch('/api/resume/job-match', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ version_id: versionId, job_description: jobDescription }),
+  });
+  return json(res);
+}
+
+export async function listResumeVersions(): Promise<ResumeVersion[]> {
+  const res = await fetch('/api/resume/versions');
+  const data = await json<{ versions: ResumeVersion[] }>(res);
+  return data.versions;
+}
+
+export async function restoreResumeVersion(id: string): Promise<ResumeVersion> {
+  const res = await fetch(
+    `/api/resume/versions/${encodeURIComponent(id)}/restore`,
+    { method: 'POST' },
+  );
+  const data = await json<{ version: ResumeVersion }>(res);
+  return data.version;
+}
+
+export async function compareResumeVersions(
+  id: string,
+  otherId: string,
+): Promise<{ from_version: number; to_version: number; diff: string[] }> {
+  const res = await fetch(
+    `/api/resume/versions/${encodeURIComponent(id)}/compare/${encodeURIComponent(otherId)}`,
+  );
+  return json(res);
+}
+
+export function resumeDownloadUrl(id: string, format: 'txt' | 'md'): string {
+  return `/api/resume/versions/${encodeURIComponent(id)}/download?format=${format}`;
+}
