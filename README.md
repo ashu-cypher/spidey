@@ -316,6 +316,72 @@ Speech API: no paid services, no API keys, no backend endpoints.
   browser and OS voices installed; the mic cannot be verified headless, so
   voice was validated to build + bundle, not end-to-end on a microphone.
 
+## Phase 7 — Advanced agent (implemented)
+
+The final phase hardens the orchestrator loop: every tool execution is
+observable, transient failures are retried once, verification failures get a
+bounded re-plan, and workflow history survives restarts.
+
+- **Workflow persistence** (`backend/app/workflows/persistence.py`): the
+  in-memory engine still serves live SSE, but `finish_run` now fires
+  registered hooks — `app.routes.chat` registers a write-through that upserts
+  the run and all its steps into `workflow_runs` / `workflow_steps` (step
+  input/output stored as JSON, truncated at ~2000 serialized chars).
+  `GET /api/activity` merges in-memory running runs with DB-persisted
+  finished runs (deduped by `workflow_id`, newest first); `GET
+  /api/workflow/{run_id}` falls back to the DB when the run is no longer in
+  memory — so history survives a server restart.
+- **Tool-call observability** (spec 29, `tool_calls` table): every TOOL step
+  records a row with `workflow_run_id`, `tool_name`, sanitized `input` JSON
+  (strings truncated to 500 chars; keys named `password` / `api_key` /
+  `token` / `secret` dropped entirely), truncated output summary,
+  `duration_ms`, `status`, user-safe `error` (never a traceback), `attempt`
+  number, and `provider` (`settings.spidey_provider`).
+- **Retries**: a tool that fails with a timeout `ToolError` ("timed out") is
+  retried exactly once; validation/user errors are never retried. The retry
+  is recorded as a second `tool_calls` row (`attempt=2`).
+- **Bounded re-plan**: if the "Verify results" step fails, the failed tool's
+  result is dropped and the remaining plan steps re-run exactly once
+  (re-plan counter max 1); the response is then composed from whatever
+  verified. `MAX_AGENT_STEPS` (9) still caps total steps and raises a clean
+  `ToolError` at the cap.
+- **`SPIDEY_DEBUG`**: new setting (`spidey_debug`, env `SPIDEY_DEBUG`,
+  default `false`). When `true`: step input/output is not truncated in API
+  responses, and `GET /api/workflow/{run_id}` includes a `debug` block
+  `{"provider", "model", "tool_calls", "retries"}`. When `false`, the current
+  truncated behavior stays.
+- Schema: alembic migration `d7f2a9c41b05` adds `tool_calls.duration_ms`,
+  `tool_calls.error`, `tool_calls.attempt`, `tool_calls.provider` and
+  `workflow_steps.seq` (order-stable DB reads).
+
+## Backend reality check (honest)
+
+- **Database:** PostgreSQL 16 + pgvector, running locally here (not a managed
+  cloud service). Alembic migrations are the canonical schema path; the app
+  also runs `create_all` on boot as a dev convenience.
+- **Embeddings:** the active provider is a **DEV hashing fallback**
+  (`app/rag/embeddings.py`) — deterministic, but *not* semantic search.
+  Retrieval ranks by token overlap + cosine on hashed vectors, gated by a
+  confidence threshold. `sentence-transformers` is **not** a dependency
+  (too heavy for this environment) — installing it and wiring a real model
+  is the documented upgrade path for true semantic retrieval.
+- **LLM provider:** default is the built-in `rule_based` provider (no API
+  key, no network). OpenAI / Ollama providers exist but need keys or a local
+  model server; code explanations are structural unless a model provider is
+  configured.
+
+## Permission table (spec 21)
+
+| Level         | Meaning                                  | Examples                                  |
+| ------------- | ---------------------------------------- | ----------------------------------------- |
+| `read`        | Safe to run automatically                | calculator, web search, RAG search, list  |
+| `low_write`   | Low-risk writes, auto-executed           | create task/reminder, save memory, upload  |
+| `confirm`     | Needs explicit user confirmation in chat | delete task/reminder/document/memory      |
+
+A `confirm`-level action proposed by the agent returns a `confirm_token`;
+the action only executes after the user approves it (single-use, 10-minute
+expiry). Direct REST deletes (explicit UI clicks) don't need confirmation.
+
 ## Roadmap
 
 - **Phase 2 — Memory:** PostgreSQL, memory tables, retrieval, management UI ✅
@@ -329,7 +395,9 @@ Speech API: no paid services, no API keys, no backend endpoints.
   model provider is configured; shell stub refuses)
 - **Phase 6 — Voice:** speech-to-text, TTS, microphone UI ✅
   (free Web Speech API only; zero backend changes, zero paid APIs)
-- **Phase 7 — Advanced agent:** multi-tool planning, retries, workflow history
+- **Phase 7 — Advanced agent:** workflow persistence, tool-call
+  observability, one transient retry, bounded re-plan, `SPIDEY_DEBUG` ✅
+  (history survives restarts; embeddings still the DEV hashing fallback)
 
 ## Quickstart
 
@@ -339,8 +407,23 @@ Backend:
 cd backend
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
+
+`.env` setup (copy and fill in — never commit this file):
+
+```bash
+# backend/.env
+DATABASE_URL=postgresql+psycopg://spidey:<password>@127.0.0.1:5432/spidey
+SPIDEY_PROVIDER=rule_based   # or: openai | ollama
+# OPENAI_API_KEY=...         # only for SPIDEY_PROVIDER=openai
+# OLLAMA_BASE_URL=http://localhost:11434  # only for ollama
+VECTOR_BACKEND=pgvector      # or: local (sqlite/JSON, no pgvector type)
+SPIDEY_DEBUG=false           # true → full step I/O + debug block in APIs
+```
+
+```bash
+.venv/bin/alembic upgrade head  # canonical schema path (creates tables)
+.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 Frontend:
 
@@ -372,9 +455,9 @@ bash ~/workspace/spidey/dev-setup-postgres.sh
 | GET    | `/`                         | Service info                             |
 | GET    | `/api/health`               | Health + active provider                 |
 | POST   | `/api/chat`                 | `{"message": str}` → `{"run_id": str}`   |
-| GET    | `/api/workflow/{run_id}`    | Full workflow run with steps             |
+| GET    | `/api/workflow/{run_id}`    | Full workflow run with steps (DB fallback; `debug` block when `SPIDEY_DEBUG=true`) |
 | GET    | `/api/workflow/{run_id}/stream` | SSE live step updates                |
-| GET    | `/api/activity`             | Past runs, newest first                  |
+| GET    | `/api/activity`             | In-memory running + DB-persisted finished runs, newest first (restart-safe) |
 | GET    | `/api/memory`               | Stored memories                          |
 | POST   | `/api/memory`               | `{"content": str, ...}` → `{"saved": {...}}` |
 | DELETE | `/api/memory/{memory_id}`     | → `{"deleted": id}` (404 if unknown)        |

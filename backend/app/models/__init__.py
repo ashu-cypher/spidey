@@ -177,6 +177,12 @@ class ToolCall(Base):
     input: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     output: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="completed")
+    # Phase 7 observability (spec 29): sanitized I/O, timing, retry attempts,
+    # user-safe error only, and the provider name (settings.spidey_provider).
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempt: Mapped[int] = mapped_column(Integer, default=1)
+    provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 
@@ -204,6 +210,8 @@ class WorkflowStep(Base):
     name: Mapped[str] = mapped_column(String(128))
     type: Mapped[str] = mapped_column(String(32))
     status: Mapped[str] = mapped_column(String(16), default="waiting")
+    # Original position in the run's step list (Phase 7: order-stable DB reads).
+    seq: Mapped[int] = mapped_column(Integer, default=0)
     input: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     output: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)

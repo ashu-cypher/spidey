@@ -41,7 +41,7 @@ def create_app():
 
     @app.get("/")
     async def root():
-        return {"service": "spidey", "phase": 5}
+        return {"service": "spidey", "phase": 7}
 
     return app
 

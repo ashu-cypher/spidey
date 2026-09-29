@@ -6,14 +6,26 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app.agents.spidey_agent import SpideyAgent
+from app.config import settings
 from app.providers import get_provider
 from app.tools import TOOL_REGISTRY
 from app.tools.base import ToolError
 from app.workflows.engine import engine
+from app.workflows.persistence import (
+    get_persisted_run,
+    list_persisted_runs,
+    persist_run,
+)
 
 router = APIRouter()
 provider = get_provider()
 agent = SpideyAgent(provider, TOOL_REGISTRY)
+
+# Phase 7: write-through persistence — finished runs land in workflow_runs /
+# workflow_steps so activity survives restarts. Registered on the process
+# singleton here; finish_run swallows hook errors so DB trouble never breaks
+# the live run.
+engine.add_finish_hook(persist_run)
 
 
 class ChatRequest(BaseModel):
@@ -102,9 +114,17 @@ def _tool_error(exc: ToolError, not_found_code: int = 404) -> HTTPException:
 @router.get("/api/workflow/{run_id}")
 async def get_workflow(run_id: str):
     run = engine.get_run(run_id)
-    if not run:
-        raise HTTPException(404, "workflow not found")
-    return run.model_dump(mode="json")
+    if run is not None:
+        payload = run.model_dump(mode="json")
+    else:
+        # Phase 7: fall back to the DB-persisted run (restart survival).
+        payload = get_persisted_run(run_id)
+        if payload is None:
+            raise HTTPException(404, "workflow not found")
+    if settings.spidey_debug:
+        # Phase 7 debug block: provider/model + observability counters.
+        payload["debug"] = agent.get_debug_info(run_id)
+    return payload
 
 
 @router.get("/api/workflow/{run_id}/stream")
@@ -141,7 +161,16 @@ async def stream_workflow(run_id: str):
 
 @router.get("/api/activity")
 async def activity():
-    return [r.model_dump(mode="json") for r in engine.list_runs()]
+    """Phase 7: in-memory running runs PLUS DB-persisted finished runs,
+    deduped by workflow_id, newest first (restart survival)."""
+    runs = [r.model_dump(mode="json") for r in engine.list_runs()]
+    seen = {r["workflow_id"] for r in runs}
+    for persisted in list_persisted_runs():
+        if persisted["workflow_id"] not in seen:
+            runs.append(persisted)
+            seen.add(persisted["workflow_id"])
+    runs.sort(key=lambda r: r.get("started_at") or "", reverse=True)
+    return runs
 
 
 @router.get("/api/memory")

@@ -1,15 +1,23 @@
 import json
+import logging
 import re
 import secrets
 import time
 from typing import Any, Awaitable, Callable
 
+from sqlalchemy import select
+
 from app.agents.memory_manager import MemoryManager
 from app.agents.planner import build_plan
+from app.config import settings
+from app.database import get_session
+from app.models import ToolCall, WorkflowRun as WorkflowRunRow
 from app.providers.base import AIProvider
 from app.tools.base import BaseTool, ToolError
 from app.tools.reminders import extract_reminder_title, parse_reminder_at
 from app.tools.tasks import parse_due
+
+logger = logging.getLogger("spidey")
 
 _FALLBACK_REPLY = "Spidey couldn't complete that step."
 
@@ -31,6 +39,34 @@ _VERIFY_KEYS: dict[str, tuple[str, ...]] = {
 # 10-minute expiry (spec 21).
 CONFIRM_TTL_SECONDS = 600
 
+# Sensitive input keys are dropped (never stored) by the Phase 7
+# tool-call sanitizer (spec 29). Compared case-insensitively.
+_SENSITIVE_KEYS = {"password", "api_key", "apikey", "token", "secret"}
+
+# A ToolError counts as transient (worth exactly one retry) only when its
+# user-safe message indicates a timeout. Validation and user errors are
+# never retried.
+_TRANSIENT_MARKER = "timed out"
+
+# Per-step string cap used by the tool-call sanitizer / summarizer.
+_SANITIZE_LIMIT = 500
+
+
+def _sanitize(value: Any) -> Any:
+    """Spec 29 sanitizer: drop sensitive keys, truncate long strings."""
+    if isinstance(value, dict):
+        return {
+            key: _sanitize(val)
+            for key, val in value.items()
+            if str(key).lower() not in _SENSITIVE_KEYS
+        }
+    if isinstance(value, (list, tuple)):
+        return [_sanitize(v) for v in value]
+    if isinstance(value, str) and len(value) > _SANITIZE_LIMIT:
+        return value[:_SANITIZE_LIMIT]
+    return value
+
+
 # Cosine-similarity score below this means the retrieval is too weak to trust.
 # Chosen for the 384-dim providers used in Phase 3 (documented in README):
 # related query/chunk pairs score well above it, unrelated pairs below.
@@ -51,6 +87,8 @@ class SpideyAgent:
         # token -> {"tool", "args", "message", "classification", "plan_step",
         #           "proposal", "expires_at"}
         self._pending: dict[str, dict] = {}
+        # Tool that failed the most recent _verify() call (Phase 7 re-plan).
+        self._last_verify_failure: str | None = None
 
     def _action_permission(self, tool_name: str, action: str | None) -> str:
         """Effective permission for a planned tool action (spec 21)."""
@@ -85,6 +123,11 @@ class SpideyAgent:
         return f"Run {tool_name} ({action})?"
 
     def _safe(self, out: Any) -> dict:
+        # SPIDEY_DEBUG=true: full input/output in API responses (Phase 7).
+        if settings.spidey_debug:
+            if isinstance(out, dict):
+                return dict(out)
+            return {"value": str(out)}
         if isinstance(out, dict):
             safe: dict = {}
             for key, value in out.items():
@@ -98,11 +141,162 @@ class SpideyAgent:
             return exc.user_message
         return _FALLBACK_REPLY
 
+    def _record_tool_call(
+        self,
+        run,
+        tool_name: str,
+        input_data: Any,
+        output: Any,
+        duration_ms: int,
+        status: str,
+        error: str | None,
+        attempt: int,
+    ) -> None:
+        """Phase 7 tool-call observability (spec 29). Never raises."""
+        try:
+            with get_session() as session:
+                # tool_calls is written mid-run, before persist_run() creates
+                # the workflow_runs row — ensure the parent row exists first
+                # (persist_run upserts/refreshes it on finish).
+                if session.get(WorkflowRunRow, run.workflow_id) is None:
+                    session.add(
+                        WorkflowRunRow(
+                            id=run.workflow_id,
+                            user_id=getattr(run, "user_id", "local"),
+                            request=getattr(run, "request", ""),
+                            status="running",
+                        )
+                    )
+                    # Flush the parent row explicitly: the unit of work does
+                    # not reliably order a same-session parent+child insert
+                    # pair here, so the FK would fail without it.
+                    session.flush()
+                session.add(
+                    ToolCall(
+                        workflow_run_id=run.workflow_id,
+                        tool_name=tool_name,
+                        input=_sanitize(input_data or {}),
+                        output=_sanitize(output) if output is not None else None,
+                        status=status,
+                        duration_ms=duration_ms,
+                        error=error,  # user-safe message only, never a traceback
+                        attempt=attempt,
+                        provider=settings.spidey_provider,
+                    )
+                )
+        except Exception:
+            logger.exception("tool_calls insert failed for %s", tool_name)
+
+    def get_debug_info(self, run_id: str) -> dict:
+        """Phase 7 debug block for GET /api/workflow/{run_id}."""
+        tool_calls = 0
+        retries = 0
+        try:
+            with get_session() as session:
+                rows = list(
+                    session.scalars(
+                        select(ToolCall).where(
+                            ToolCall.workflow_run_id == run_id
+                        )
+                    )
+                )
+                tool_calls = len(rows)
+                retries = sum(1 for r in rows if (r.attempt or 1) > 1)
+        except Exception:
+            logger.exception("debug info query failed for %s", run_id)
+        model = getattr(self.provider, "model", None) or getattr(
+            self.provider, "name", "unknown"
+        )
+        return {
+            "provider": settings.spidey_provider,
+            "model": model,
+            "tool_calls": tool_calls,
+            "retries": retries,
+        }
+
+    async def _run_tool_step(
+        self,
+        run,
+        engine,
+        step,
+        tool_name: str,
+        fn: Callable[[], Awaitable[Any]],
+        input_data: dict | None,
+    ) -> Any:
+        """Execute a TOOL step with Phase 7 observability + one transient retry.
+
+        Every attempt is recorded in tool_calls (attempt column); only a
+        timeout ToolError ("timed out") is retried, exactly once. Validation
+        and user errors fail immediately. Errors stored are user-safe only —
+        no raw tracebacks, and sensitive input keys were already dropped by
+        the sanitizer.
+        """
+        sanitized_input = _sanitize(input_data or {})
+        attempt = 0
+        while True:
+            attempt += 1
+            started = time.perf_counter()
+            try:
+                out = await fn()
+            except ToolError as exc:
+                duration_ms = int((time.perf_counter() - started) * 1000)
+                self._record_tool_call(
+                    run,
+                    tool_name,
+                    sanitized_input,
+                    None,
+                    duration_ms,
+                    "failed",
+                    exc.user_message,
+                    attempt,
+                )
+                if _TRANSIENT_MARKER in exc.user_message.lower() and attempt == 1:
+                    continue  # one retry on transient timeout
+                engine.update_step(
+                    run.workflow_id, step.step_id, status="FAILED",
+                    error=self._user_msg(exc),
+                )
+                raise
+            except Exception as exc:
+                duration_ms = int((time.perf_counter() - started) * 1000)
+                self._record_tool_call(
+                    run,
+                    tool_name,
+                    sanitized_input,
+                    None,
+                    duration_ms,
+                    "failed",
+                    self._user_msg(exc),
+                    attempt,
+                )
+                engine.update_step(
+                    run.workflow_id, step.step_id, status="FAILED",
+                    error=self._user_msg(exc),
+                )
+                raise
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            self._record_tool_call(
+                run,
+                tool_name,
+                sanitized_input,
+                self._safe(out),
+                duration_ms,
+                "completed",
+                None,
+                attempt,
+            )
+            engine.update_step(
+                run.workflow_id, step.step_id, status="COMPLETED",
+                output=self._safe(out),
+            )
+            return out
+
     def _stepper(self, run, engine):
         """Build the visible-step recorder shared by run() and _run_resume_steps.
 
         Every step is recorded on the workflow engine (WAITING -> RUNNING ->
         COMPLETED/FAILED) so the WorkflowPanel shows the full pipeline live.
+        TOOL steps additionally get per-attempt tool_calls rows (Phase 7).
         """
         step_count = 0
 
@@ -111,6 +305,7 @@ class SpideyAgent:
             step_type: str,
             fn: Callable[[], Awaitable[Any]],
             input_data: dict | None = None,
+            tool_name: str | None = None,
         ) -> Any:
             nonlocal step_count
             step_count += 1
@@ -118,6 +313,10 @@ class SpideyAgent:
                 raise ToolError("Agent step limit exceeded.")
             step = engine.add_step(run.workflow_id, name, step_type, input_data)
             engine.update_step(run.workflow_id, step.step_id, status="RUNNING")
+            if step_type == "tool" and tool_name:
+                return await self._run_tool_step(
+                    run, engine, step, tool_name, fn, input_data
+                )
             try:
                 out = await fn()
             except Exception as exc:
@@ -218,30 +417,53 @@ class SpideyAgent:
                 )
                 return payload
 
-            for plan_step, tool_name, args in tool_jobs:
+            # Tool execution + bounded re-plan (Phase 7): if "Verify results"
+            # fails, drop the failed tool's result and re-run the remaining
+            # plan steps exactly once (replan_count max 1), then compose the
+            # response from whatever verified. MAX_AGENT_STEPS still caps the
+            # total steps and raises cleanly.
+            replan_count = 0
+            pending_jobs: list[tuple[dict, str, dict]] = list(tool_jobs)
+            while pending_jobs:
+                current_jobs, pending_jobs = pending_jobs, []
+                for plan_step, tool_name, args in current_jobs:
+                    try:
+                        tool_results[tool_name] = await _step(
+                            plan_step["name"],
+                            "tool",
+                            lambda _t=tool_name, _a=args: self.tools[_t].execute(**_a),
+                            input_data=args,
+                            tool_name=tool_name,
+                        )
+                    except ToolError as exc:
+                        if tool_name == "search":
+                            # Graceful degradation: report the outage, not a crash.
+                            tool_results[tool_name] = {
+                                "results": [],
+                                "error": exc.user_message,
+                            }
+                        else:
+                            raise
+                if not tool_results:
+                    break
                 try:
-                    tool_results[tool_name] = await _step(
-                        plan_step["name"],
-                        "tool",
-                        lambda _t=tool_name, _a=args: self.tools[_t].execute(**_a),
-                        input_data=args,
+                    await _step(
+                        "Verify results",
+                        "verify",
+                        lambda: self._verify(tool_results),
                     )
-                except ToolError as exc:
-                    if tool_name == "search":
-                        # Graceful degradation: report the outage, not a crash.
-                        tool_results[tool_name] = {
-                            "results": [],
-                            "error": exc.user_message,
-                        }
-                    else:
-                        raise
-
-            if tool_results:
-                await _step(
-                    "Verify results",
-                    "verify",
-                    lambda: self._verify(tool_results),
-                )
+                except ToolError:
+                    failed_tool = self._last_verify_failure
+                    tool_results.pop(failed_tool, None)
+                    if replan_count >= 1:
+                        # Re-plan budget spent: compose from whatever verified.
+                        break
+                    replan_count += 1
+                    pending_jobs = [
+                        (ps, tn, a)
+                        for (ps, tn, a) in tool_jobs
+                        if tn in tool_results
+                    ]
 
             facts = self._compose_facts(intent, message, tool_results, mems)
             response = await _step(
@@ -288,6 +510,7 @@ class SpideyAgent:
                 "tool",
                 lambda: self.tools[tool_name].execute(**args),
                 input_data=args,
+                tool_name=tool_name,
             )
             tool_results = {tool_name: result}
             await _step(
@@ -327,6 +550,7 @@ class SpideyAgent:
                 "tool",
                 lambda: self.tools["resume"].execute(action="latest"),
                 input_data={"action": "latest"},
+                tool_name="resume",
             )
             version = (latest or {}).get("version")
             if not version:
@@ -348,6 +572,7 @@ class SpideyAgent:
                     action="analyze", version_id=version_id
                 ),
                 input_data={"action": "analyze", "version_id": version_id},
+                tool_name="resume",
             )
             analysis = analysis_out.get("analysis", {})
             weaknesses = await _step(
@@ -368,6 +593,7 @@ class SpideyAgent:
                     action="improve", version_id=version_id
                 ),
                 input_data={"action": "improve", "version_id": version_id},
+                tool_name="resume",
             )
             await _step(
                 "Verify results",
@@ -456,11 +682,14 @@ class SpideyAgent:
             return {"saved": False, "reason": "memory store unavailable"}
 
     async def _verify(self, tool_results: dict[str, dict]) -> dict:
+        self._last_verify_failure = None
         for tool_name, result in tool_results.items():
             if not isinstance(result, dict) or not result:
+                self._last_verify_failure = tool_name
                 raise ToolError("Verification failed.")
             expected = _VERIFY_KEYS.get(tool_name, ())
             if expected and not any(k in result for k in expected):
+                self._last_verify_failure = tool_name
                 raise ToolError("Verification failed.")
         return {"verified": True}
 

@@ -37,6 +37,10 @@ class WorkflowEngine:
     def __init__(self) -> None:
         self._runs: dict[str, WorkflowRun] = {}
         self._queues: dict[str, list[asyncio.Queue]] = {}
+        # Phase 7: synchronous callbacks invoked from finish_run (e.g. the
+        # DB write-through hook registered by app.routes.chat). Hooks must
+        # never raise — finish_run swallows their errors.
+        self._finish_hooks: list = []
 
     def create_run(self, request: str, user_id: str = "local") -> WorkflowRun:
         run = WorkflowRun(request=request, user_id=user_id)
@@ -96,6 +100,10 @@ class WorkflowEngine:
         )
         return step
 
+    def add_finish_hook(self, fn) -> None:
+        """Register a callback run through on finish_run (Phase 7)."""
+        self._finish_hooks.append(fn)
+
     def finish_run(
         self, run_id: str, status: str, result: str | None = None
     ) -> WorkflowRun:
@@ -106,6 +114,12 @@ class WorkflowEngine:
         self._publish(
             run_id, {"type": "done", "run": run.model_dump(mode="json")}
         )
+        for hook in self._finish_hooks:
+            try:
+                hook(run)
+            except Exception:
+                # Persistence must never break the live run.
+                pass
         return run
 
     def subscribe(self, run_id: str) -> asyncio.Queue:
