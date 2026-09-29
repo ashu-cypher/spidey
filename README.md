@@ -282,6 +282,40 @@ Architecture:
   never routing to shell, intent routing incl. "search my documents" →
   RAG). 78/78 green.
 
+## Phase 6 — Voice interface (implemented)
+
+**No backend changes — the API is already text in/out, so voice is a pure
+frontend layer** (spec section 18). Built entirely on the free browser Web
+Speech API: no paid services, no API keys, no backend endpoints.
+
+- **`frontend/src/hooks/useVoice.ts`** (new): reusable voice module —
+  - `useSpeechRecognition()`: wraps `window.SpeechRecognition ||
+    window.webkitSpeechRecognition` (`continuous=false`,
+    `interimResults=true`, `lang='en-US'`); exposes `{ supported,
+    listening, transcript (live interim), finalTranscript, error, start(),
+    stop(), clear() }`. `supported` is `false` when the API is absent
+    (non-HTTPS / headless browsers), and the UI degrades gracefully.
+  - `useTextToSpeech()`: wraps `window.speechSynthesis`; exposes
+    `{ supported, speaking, speak(text), stop(), replay() }`. Speech is
+    cancelled on unmount.
+  - `stripForSpeech()`: light regex cleanup before reading aloud (drops
+    code blocks, markdown formatting, links, `[n]` citations, bare URLs).
+- **ChatPanel wiring** (`frontend/src/components/ChatPanel.tsx`):
+  - Mic button 🎤 next to the input: pulsing red dot + "Listening…" with
+    the live interim transcript while recording; the final transcript
+    **auto-sends** as the chat message. Disabled with tooltip "Voice not
+    supported in this browser" when the API is absent — the app stays fully
+    usable through text.
+  - Every assistant reply has a 🔊 read-aloud button (markdown stripped)
+    and a ⏹ stop button that appears while speaking.
+- **Browser requirements:** Chrome or Edge recommended (best Web Speech
+  support); HTTPS or localhost is required for the microphone. The browser
+  will ask for mic permission on first use. If the API is unavailable, the
+  mic button is greyed out and everything else works unchanged.
+- **Honest limits:** recognition accuracy/voice choice depends on the
+  browser and OS voices installed; the mic cannot be verified headless, so
+  voice was validated to build + bundle, not end-to-end on a microphone.
+
 ## Roadmap
 
 - **Phase 2 — Memory:** PostgreSQL, memory tables, retrieval, management UI ✅
@@ -293,7 +327,8 @@ Architecture:
   permission levels + chat confirmation flow ✅
   (DDG instant-answer limits; code explanations are structural unless a
   model provider is configured; shell stub refuses)
-- **Phase 6 — Voice:** speech-to-text, TTS, microphone UI
+- **Phase 6 — Voice:** speech-to-text, TTS, microphone UI ✅
+  (free Web Speech API only; zero backend changes, zero paid APIs)
 - **Phase 7 — Advanced agent:** multi-tool planning, retries, workflow history
 
 ## Quickstart

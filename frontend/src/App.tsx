@@ -64,7 +64,7 @@ export function App() {
         </main>
 
         <footer className="mt-8 text-center font-mono text-[11px] text-gray-600">
-          SPIDEY — Phase 5 Tools
+          SPIDEY — Phase 6 Voice
         </footer>
       </div>
     </div>

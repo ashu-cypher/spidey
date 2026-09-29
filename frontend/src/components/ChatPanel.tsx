@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { postChat } from '../api';
 import type { ConfirmationPayload, WorkflowRun, WorkflowStep } from '../api';
 import { WorkflowPanel } from './WorkflowPanel';
+import { useSpeechRecognition, useTextToSpeech } from '../hooks/useVoice';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -45,6 +46,19 @@ export function ChatPanel({ onActivity }: Props) {
   const [liveSteps, setLiveSteps] = useState<WorkflowStep[]>([]);
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState<ConfirmationPayload | null>(null);
+  const stt = useSpeechRecognition();
+  const tts = useTextToSpeech();
+
+  // When voice input finishes, send the final transcript as the chat message.
+  useEffect(() => {
+    if (stt.finalTranscript && !stt.listening && !busy) {
+      const text = stt.finalTranscript;
+      stt.clear();
+      void send(text);
+    }
+    // send is stable enough here; re-running on it would double-send.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stt.finalTranscript, stt.listening, busy]);
 
   async function send(text: string, confirmToken?: string) {
     const message = text.trim();
@@ -124,6 +138,29 @@ export function ChatPanel({ onActivity }: Props) {
                 }`}
               >
                 {m.text}
+                {m.role === 'assistant' && (
+                  <div className="mt-1.5 flex gap-1">
+                    <button
+                      type="button"
+                      title={tts.supported ? 'Read this reply aloud' : 'Voice not supported in this browser'}
+                      disabled={!tts.supported}
+                      onClick={() => tts.speak(m.text)}
+                      className="rounded-md border border-white/10 bg-white/5 px-1.5 py-0.5 text-xs text-gray-400 hover:border-accent/50 hover:text-accent disabled:opacity-40"
+                    >
+                      🔊
+                    </button>
+                    {tts.speaking && (
+                      <button
+                        type="button"
+                        title="Stop reading"
+                        onClick={() => tts.stop()}
+                        className="rounded-md border border-red-400/40 bg-red-400/10 px-1.5 py-0.5 text-xs text-red-300 hover:bg-red-400/20"
+                      >
+                        ⏹
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           ))}
@@ -176,13 +213,48 @@ export function ChatPanel({ onActivity }: Props) {
           </div>
         )}
 
+        {stt.listening && (
+          <p className="mb-2 flex items-center gap-2 text-sm italic text-gray-400" aria-live="polite">
+            <span className="inline-block h-2 w-2 rounded-full bg-red-500 animate-ping" />
+            Listening… {stt.transcript}
+          </p>
+        )}
+        {stt.error && (
+          <p className="mb-2 text-xs text-red-400">{stt.error}</p>
+        )}
+
         <form
           onSubmit={(e) => {
             e.preventDefault();
             void send(input);
           }}
           className="flex gap-2"
-        >          <input
+        >          {stt.supported ? (
+            <button
+              type="button"
+              onClick={() => (stt.listening ? stt.stop() : stt.start())}
+              disabled={busy}
+              title={stt.listening ? 'Stop listening' : 'Speak your message (voice input)'}
+              className={`rounded-lg border px-4 py-2 text-sm transition-colors disabled:opacity-40 ${
+                stt.listening
+                  ? 'border-red-400/60 bg-red-400/15 text-red-200'
+                  : 'border-white/10 bg-white/5 text-gray-300 hover:border-accent/50 hover:text-accent'
+              }`}
+            >
+              <span className={stt.listening ? 'mr-1 inline-block h-2 w-2 rounded-full bg-red-500 animate-pulse' : ''} />
+              🎤
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled
+              title="Voice not supported in this browser"
+              className="rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-sm text-gray-600 opacity-40 cursor-not-allowed"
+            >
+              🎤
+            </button>
+          )}
+          <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder="Message Spidey…"
