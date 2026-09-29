@@ -8,10 +8,55 @@ _RECALL = re.compile(
     re.IGNORECASE,
 )
 _TASK_CREATE = re.compile(
-    r"\b((create|add)\s+(a\s+)?task|remind me to|todo\b)", re.IGNORECASE
+    r"\b((create|add)\s+(a\s+)?task|todo\b)", re.IGNORECASE
 )
 _TASK_LIST = re.compile(
     r"\b(list|show)\b.{0,20}\btasks?\b|\bmy tasks\b", re.IGNORECASE
+)
+# Phase 5 intents. "remind me to" used to route to task_create; it now owns
+# reminders. These are checked BEFORE the generic task intents below.
+_REMINDER_CREATE = re.compile(
+    r"\bremind me to\b|\bset\s+(?:a\s+)?reminders?\b", re.IGNORECASE
+)
+_REMINDER_COMPLETE = re.compile(
+    r"\b(complete|finish|mark)\b.{0,30}\breminders?\b"
+    r"|\breminders?\b.{0,20}\b(done|completed)\b",
+    re.IGNORECASE,
+)
+_REMINDER_DELETE = re.compile(
+    r"\b(delete|remove|drop|cancel)\b.{0,30}\breminders?\b"
+    r"|\breminders?\b.{0,20}\b(delete|remove|drop)\b",
+    re.IGNORECASE,
+)
+_REMINDER_LIST = re.compile(
+    r"\b(list|show)\b.{0,20}\breminders?\b|\bmy reminders?\b", re.IGNORECASE
+)
+_TASK_DELETE = re.compile(
+    r"\b(delete|remove|drop|cancel)\b.{0,30}\btasks?\b"
+    r"|\btasks?\b.{0,20}\b(delete|remove|drop)\b",
+    re.IGNORECASE,
+)
+_TASK_COMPLETE = re.compile(
+    r"\b(complete|finish|mark)\b.{0,30}\btasks?\b"
+    r"|\btasks?\b.{0,20}\b(done|completed)\b",
+    re.IGNORECASE,
+)
+# Web search — checked AFTER _KNOWLEDGE so "search my documents" stays RAG.
+_WEB_SEARCH = re.compile(
+    r"\bsearch\b.{0,20}\b(web|internet|online)\b"
+    r"|\bsearch\s+the\s+web\s+for\b"
+    r"|\b(find|get)\b.{0,25}\binformation\s+about\b"
+    r"|\bgoogle\b",
+    re.IGNORECASE,
+)
+_DOCUMENT_CREATE = re.compile(
+    r"\b(create|make|write)\b.{0,25}\b(documents?|notes?)\b", re.IGNORECASE
+)
+_CODE_EXPLAIN = re.compile(
+    r"\bexplain\b.{0,40}\bcode\b"
+    r"|\bwhat\s+does\s+(this|the)\s+code\s+do\b"
+    r"|\bwalk\s+me\s+through\s+(this|the)\s+code\b",
+    re.IGNORECASE,
 )
 _CALCULATE = re.compile(
     r"\b(calculat|compute|what is|what's|\d\s*[\+\-\*\/\%\^]|\bplus\b|\bminus\b|\btimes\b|\bdivided\b)",
@@ -102,6 +147,54 @@ class RuleBasedProvider(AIProvider):
                 "tools": ["memory"],
                 "response_mode": "answer",
             }
+        if _REMINDER_CREATE.search(text):
+            return {
+                "intent": "reminder_create",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["reminders"],
+                "response_mode": "confirm",
+            }
+        if _REMINDER_COMPLETE.search(text):
+            return {
+                "intent": "reminder_complete",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["reminders"],
+                "response_mode": "confirm",
+            }
+        if _REMINDER_DELETE.search(text):
+            return {
+                "intent": "reminder_delete",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["reminders"],
+                "response_mode": "confirm",
+            }
+        if _REMINDER_LIST.search(text):
+            return {
+                "intent": "reminder_list",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["reminders"],
+                "response_mode": "list",
+            }
+        if _TASK_DELETE.search(text):
+            return {
+                "intent": "task_delete",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["tasks"],
+                "response_mode": "confirm",
+            }
+        if _TASK_COMPLETE.search(text):
+            return {
+                "intent": "task_complete",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["tasks"],
+                "response_mode": "confirm",
+            }
         if _TASK_CREATE.search(text):
             return {
                 "intent": "task_create",
@@ -117,6 +210,30 @@ class RuleBasedProvider(AIProvider):
                 "requires_tools": True,
                 "tools": ["tasks"],
                 "response_mode": "list",
+            }
+        if _WEB_SEARCH.search(text):
+            return {
+                "intent": "web_search",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["search"],
+                "response_mode": "answer",
+            }
+        if _DOCUMENT_CREATE.search(text):
+            return {
+                "intent": "document_create",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["documents"],
+                "response_mode": "confirm",
+            }
+        if _CODE_EXPLAIN.search(text):
+            return {
+                "intent": "code_explain",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["code"],
+                "response_mode": "answer",
             }
         if _CALCULATE.search(text):
             return {
@@ -161,11 +278,13 @@ class RuleBasedProvider(AIProvider):
             return "Hello. Spidey here — what are we tackling?"
         if intent == "help":
             return (
-                "I can calculate, remember things, manage tasks, search your "
-                "uploaded documents, analyze your resume, and chat. Try: "
-                "'calculate 12 * 8', 'remember that I am learning Python', "
-                "'search my documents for the refund policy', "
-                "'analyze my resume', or 'create a task for tomorrow'."
+                "I can calculate, remember things, manage tasks and reminders, "
+                "search the web, search your uploaded documents, create "
+                "documents/notes, explain code, analyze your resume, and chat. "
+                "Try: 'calculate 12 * 8', 'remind me to call mom tomorrow', "
+                "'search the web for quantum computing', "
+                "'create a document titled Notes with content hello', or "
+                "'explain this code: ...'."
             )
         return (
             "Noted. Give me something concrete — a calculation, "

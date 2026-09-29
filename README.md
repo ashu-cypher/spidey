@@ -191,6 +191,97 @@ Architecture:
   invariant, append-only versioning incl. restore, job-match matched/missing
   split, no-CV clean message, the 9-step pipeline). 58/58 green.
 
+## Phase 5 — Tools (implemented)
+
+- **TaskTool is now DB-backed** (`backend/app/tools/tasks.py`, `tasks` table):
+  same action interface as before (`create`/`list`/`get`/`complete`/
+  `set_done`/`delete`; result keys `"task"`/`"tasks"`/`"deleted"`), so the
+  agent verify step and `GET /api/tasks` keep working. Due-date parsing lives
+  in the tool (`parse_due`: "tomorrow"/"today"/"in N days"/"next week" →
+  ISO date); the agent's `_extract_due` reuses it. Task REST grew up too:
+  `POST /api/tasks` (title + optional due), `PATCH /api/tasks/{id}`
+  (`{"done": bool}` toggle), `DELETE /api/tasks/{id}`.
+- **ReminderTool** (`backend/app/tools/reminders.py`, `reminders` table):
+  `create {"title", "remind_at"?: iso}` / `list` / `get` / `complete` /
+  `set_done` / `delete`; result keys `"reminder"`/`"reminders"`/`"deleted"`.
+  Simple time-expression parsing (`parse_reminder_at`: "tomorrow at 5pm",
+  "in 2 hours", "tonight", …; vague → tomorrow 9am) and title extraction
+  (`extract_reminder_title`) live in the tool and are reused by the agent.
+  REST: `GET/POST /api/reminders`, `PATCH /api/reminders/{id}`,
+  `DELETE /api/reminders/{id}`.
+- **SearchTool** (`backend/app/tools/search.py`): web search via the
+  DuckDuckGo Instant Answer endpoint (`https://api.duckduckgo.com/?q=…&
+  format=json&no_html=1&skip_disambig=1`, no key, 15 s httpx timeout).
+  Parses `AbstractText`/`AbstractURL` plus the first ~5 `RelatedTopics`
+  (`Text`+`FirstURL`). Any failure raises
+  `ToolError("Web search is unavailable right now.")` — never a traceback —
+  and the agent degrades gracefully: the run completes with that message
+  instead of failing. Honest limit: the DDG instant-answer API returns an
+  abstract + related topics, not a full web index — quick facts yes, deep
+  research no.
+- **DocumentTool** (`backend/app/tools/documents.py`): `create
+  {"title", "content", "format": "md"|"txt"}` saves a real file under
+  `backend/generated/` (gitignored; a JSON index keeps title/format
+  metadata durable) and returns `{"document": {"id", "title", "format",
+  "download_url"}}`; `get`/`list`/`delete` included. `GET
+  /api/docs/{doc_id}/download` serves the file; `POST/GET /api/docs`,
+  `DELETE /api/docs/{doc_id}` round out the REST.
+- **CodeTool** (`backend/app/tools/code.py`): `explain {"code",
+  "language"?}` → `{"explanation", "observations"}`. With a real model
+  provider configured it calls `provider.agenerate` with the code as
+  context; offline (`rule_based`) or on provider failure it says so
+  honestly and returns regex-derived structural observations only
+  (detected functions/classes, imports, line counts, language guess) —
+  never inventing behavior the code doesn't show.
+- **ShellTool stub** (`backend/app/tools/shell.py`): registered as
+  `"shell"` but `execute()` always raises `ToolError("Shell access is not
+  enabled in SPIDEY v1. …")`. The classifier has no rule that can route to
+  it (test-enforced). Satisfies the v1 spec: no unrestricted computer
+  control.
+- **Permission levels (spec 21):** `BaseTool.permission` (`"read"` default)
+  + per-action `action_permissions` overrides:
+
+  | tool | read | low_write (auto) | confirm (chat approval) |
+  |---|---|---|---|
+  | calculator, rag, resume, search, code | everything | — | — |
+  | tasks, reminders | list, get | create, complete, set_done | delete |
+  | documents | list, get | create | delete |
+  | memory | recall, list | save | delete |
+  | shell | — | — | everything (always refused) |
+
+- **Chat confirmation flow:** when the agent's plan includes a
+  `"confirm"`-level action, it does NOT execute — the run finishes with
+  status `awaiting_confirmation` and result `{"needs_confirmation": true,
+  "proposal": "<human sentence>", "confirm_token": "<token>"}`. Pending
+  actions are stored in-memory keyed by token (single-use, 10-min expiry).
+  `POST /api/chat` accepts `confirm_token`: when valid, the pending action
+  executes through the normal workflow on a new run (Execute/Verify steps);
+  bad/expired tokens are rejected with 400. Direct REST DELETEs stay as-is
+  (explicit user clicks need no dialog). Frontend `ChatPanel` shows a
+  Confirm/Cancel dialog on `needs_confirmation`; Confirm re-POSTs with the
+  token.
+- **Classifier intents** (`rule_based.py`): `reminder_create` ("remind me to
+  X tomorrow/at 5pm" — checked before the old task rule that used to own
+  "remind me to"), `reminder_list`, `reminder_complete`, `reminder_delete`,
+  `task_delete`, `task_complete`, `web_search` ("search the web for X",
+  "find information about X" — checked AFTER knowledge search so "search my
+  documents" stays RAG), `document_create` ("create a document/note titled
+  X: …"), `code_explain` ("explain this code: …", "what does this code
+  do"). `_VERIFY_KEYS` extended: reminders `("reminder", "reminders",
+  "deleted")`, search `("results",)`, documents `("document",
+  "documents", "deleted")`, code `("explanation",)`.
+- **Frontend:** Tasks tab is fully real (create with due date, done toggle,
+  delete); new Reminders tab (same CRUD with datetime picker); ChatPanel
+  Confirm/Cancel dialog; `npm run build` passes.
+- **Tests:** `backend/tests/test_tools_phase5.py` — 20 tests (task CRUD on
+  DB + due parsing, reminder CRUD + time/title parsing, document
+  create/get/list/delete + download route, code structural fallback,
+  search graceful degradation via monkeypatched httpx, full confirmation
+  flow incl. not-deleted-before-confirm, ordinal resolution, token
+  single-use/expiry, low_write auto-execution, shell refusal + classifier
+  never routing to shell, intent routing incl. "search my documents" →
+  RAG). 78/78 green.
+
 ## Roadmap
 
 - **Phase 2 — Memory:** PostgreSQL, memory tables, retrieval, management UI ✅
@@ -198,7 +289,10 @@ Architecture:
   (embeddings on DEV hashing fallback — real semantic model is a future swap-in)
 - **Phase 4 — Resume intelligence:** CV parsing, analysis, job matching, versioning ✅
   (rule-based analysis; rewrites are rephrasings only; job-match lives in the tab)
-- **Phase 5 — Tools:** reminders, web search, document tools, code tool
+- **Phase 5 — Tools:** reminders, web search, document tools, code tool,
+  permission levels + chat confirmation flow ✅
+  (DDG instant-answer limits; code explanations are structural unless a
+  model provider is configured; shell stub refuses)
 - **Phase 6 — Voice:** speech-to-text, TTS, microphone UI
 - **Phase 7 — Advanced agent:** multi-tool planning, retries, workflow history
 

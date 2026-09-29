@@ -59,6 +59,8 @@ class MemoryTool(BaseTool):
         "required": ["action"],
     }
     output_schema = {"action": "str"}
+    # save is a low-risk write (auto); delete needs confirmation (spec 21).
+    action_permissions = {"save": "low_write", "delete": "confirm"}
 
     @staticmethod
     def _categorize(content: str) -> tuple[str, float]:

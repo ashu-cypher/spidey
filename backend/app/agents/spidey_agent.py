@@ -1,11 +1,15 @@
+import json
 import re
-from datetime import date, timedelta
+import secrets
+import time
 from typing import Any, Awaitable, Callable
 
 from app.agents.memory_manager import MemoryManager
 from app.agents.planner import build_plan
 from app.providers.base import AIProvider
 from app.tools.base import BaseTool, ToolError
+from app.tools.reminders import extract_reminder_title, parse_reminder_at
+from app.tools.tasks import parse_due
 
 _FALLBACK_REPLY = "Spidey couldn't complete that step."
 
@@ -14,10 +18,18 @@ NO_CV_REPLY = "I don't have your CV yet — upload it in the Resume tab."
 _VERIFY_KEYS: dict[str, tuple[str, ...]] = {
     "calculator": ("result",),
     "memory": ("results", "saved"),
-    "tasks": ("task", "tasks"),
+    "tasks": ("task", "tasks", "deleted"),
+    "reminders": ("reminder", "reminders", "deleted"),
     "rag": ("results", "documents"),
     "resume": ("analysis", "suggestions", "job_match", "versions", "version"),
+    "search": ("results",),
+    "documents": ("document", "documents", "deleted"),
+    "code": ("explanation",),
 }
+
+# Pending confirmations live in memory: token -> pending action. Single-use,
+# 10-minute expiry (spec 21).
+CONFIRM_TTL_SECONDS = 600
 
 # Cosine-similarity score below this means the retrieval is too weak to trust.
 # Chosen for the 384-dim providers used in Phase 3 (documented in README):
@@ -36,6 +48,41 @@ class SpideyAgent:
         self.provider = provider
         self.tools = tools
         self.memory = MemoryManager(tools["memory"])
+        # token -> {"tool", "args", "message", "classification", "plan_step",
+        #           "proposal", "expires_at"}
+        self._pending: dict[str, dict] = {}
+
+    def _action_permission(self, tool_name: str, action: str | None) -> str:
+        """Effective permission for a planned tool action (spec 21)."""
+        tool = self.tools.get(tool_name)
+        if tool is None:
+            return "read"
+        if action:
+            return tool.action_permissions.get(action, tool.permission)
+        return tool.permission
+
+    def pop_pending(self, token: str) -> dict:
+        """Consume a pending confirmation; single-use, 10-minute expiry."""
+        pending = self._pending.pop(token, None)
+        if pending is None or pending.get("expires_at", 0) < time.time():
+            raise ToolError(
+                "That confirmation has expired or is invalid. Please ask again."
+            )
+        return pending
+
+    @staticmethod
+    def _proposal(tool_name: str, args: dict) -> str:
+        action = args.get("action")
+        title = args.get("title") or args.get("text") or args.get("id") or "this item"
+        if tool_name == "tasks" and action == "delete":
+            return f'Delete the task "{title}"?'
+        if tool_name == "reminders" and action == "delete":
+            return f'Delete the reminder "{title}"?'
+        if tool_name == "documents" and action == "delete":
+            return f'Delete the document "{title}"?'
+        if tool_name == "memory" and action == "delete":
+            return f'Delete this memory: "{str(title)[:80]}"?'
+        return f"Run {tool_name} ({action})?"
 
     def _safe(self, out: Any) -> dict:
         if isinstance(out, dict):
@@ -115,17 +162,79 @@ class SpideyAgent:
                     lambda: self.memory.retrieve_relevant(message),
                 )
 
+            # Resolve all tool args up front (async: delete/complete intents
+            # resolve titles to ids via a list call).
+            tool_jobs: list[tuple[dict, str, dict]] = []
             for plan_step in plan:
                 if plan_step.get("type") != "tool":
                     continue
                 tool_name = plan_step["tool"]
-                args = self._tool_args(tool_name, intent, message)
-                tool_results[tool_name] = await _step(
-                    plan_step["name"],
-                    "tool",
-                    lambda _t=tool_name, _a=args: self.tools[_t].execute(**_a),
-                    input_data=args,
+                args = await self._tool_args(tool_name, intent, message)
+                tool_jobs.append((plan_step, tool_name, args))
+
+            # Confirmation gate (spec 21): "confirm"-level actions are never
+            # auto-executed via chat. Finish the run as awaiting_confirmation
+            # with a token the user can approve or drop.
+            gated = next(
+                (
+                    job
+                    for job in tool_jobs
+                    if self._action_permission(job[1], job[2].get("action"))
+                    == "confirm"
+                ),
+                None,
+            )
+            if gated is not None:
+                plan_step, tool_name, args = gated
+                proposal = self._proposal(tool_name, args)
+                token = secrets.token_urlsafe(24)
+                self._pending[token] = {
+                    "tool": tool_name,
+                    "args": args,
+                    "message": message,
+                    "classification": classification,
+                    "plan_step": plan_step,
+                    "proposal": proposal,
+                    "expires_at": time.time() + CONFIRM_TTL_SECONDS,
+                }
+                async def _proposal_out() -> dict:
+                    return {"proposal": proposal}
+
+                await _step(
+                    "Request confirmation",
+                    "confirm",
+                    _proposal_out,
+                    input_data={"tool": tool_name, "action": args.get("action")},
                 )
+                payload = json.dumps(
+                    {
+                        "needs_confirmation": True,
+                        "proposal": proposal,
+                        "confirm_token": token,
+                    }
+                )
+                engine.finish_run(
+                    run.workflow_id, "awaiting_confirmation", result=payload
+                )
+                return payload
+
+            for plan_step, tool_name, args in tool_jobs:
+                try:
+                    tool_results[tool_name] = await _step(
+                        plan_step["name"],
+                        "tool",
+                        lambda _t=tool_name, _a=args: self.tools[_t].execute(**_a),
+                        input_data=args,
+                    )
+                except ToolError as exc:
+                    if tool_name == "search":
+                        # Graceful degradation: report the outage, not a crash.
+                        tool_results[tool_name] = {
+                            "results": [],
+                            "error": exc.user_message,
+                        }
+                    else:
+                        raise
 
             if tool_results:
                 await _step(
@@ -148,6 +257,54 @@ class SpideyAgent:
                 lambda: self._update_memory(intent, message),
             )
 
+            engine.finish_run(run.workflow_id, "completed", result=response)
+            return response
+        except Exception:
+            engine.finish_run(run.workflow_id, "failed", result=_FALLBACK_REPLY)
+            return _FALLBACK_REPLY
+
+    async def run_confirmed(self, pending: dict, run, engine) -> str:
+        """Execute a user-confirmed pending action through the normal workflow.
+
+        Shows Execute/Verify steps on a fresh run, then invalidates the token
+        (already consumed by ``pop_pending``).
+        """
+        _step = self._stepper(run, engine)
+        tool_name = pending["tool"]
+        args = pending["args"]
+        message = pending["message"]
+        classification = pending["classification"]
+        intent = classification.get("intent", "chat_fallback")
+        try:
+            mems: list[dict] = []
+            if classification.get("requires_memory"):
+                mems = await _step(
+                    "Retrieve memory",
+                    "memory",
+                    lambda: self.memory.retrieve_relevant(message),
+                )
+            result = await _step(
+                pending["plan_step"]["name"],
+                "tool",
+                lambda: self.tools[tool_name].execute(**args),
+                input_data=args,
+            )
+            tool_results = {tool_name: result}
+            await _step(
+                "Verify results", "verify", lambda: self._verify(tool_results)
+            )
+            facts = self._compose_facts(intent, message, tool_results, mems)
+            response = await _step(
+                "Compose response",
+                "respond",
+                lambda: self.provider.agenerate(message, context=facts),
+                input_data={"facts": facts[:500]},
+            )
+            await _step(
+                "Update memory",
+                "memory_update",
+                lambda: self._update_memory(intent, message),
+            )
             engine.finish_run(run.workflow_id, "completed", result=response)
             return response
         except Exception:
@@ -312,7 +469,7 @@ class SpideyAgent:
             return {"saved": True, "reason": "already saved by memory tool"}
         return {"saved": False, "reason": "nothing salient"}
 
-    def _tool_args(self, tool: str, intent: str, message: str) -> dict:
+    async def _tool_args(self, tool: str, intent: str, message: str) -> dict:
         if tool == "calculator":
             return {"text": message}
         if tool == "memory":
@@ -329,7 +486,30 @@ class SpideyAgent:
                     "title": self._extract_task(message),
                     "due": self._extract_due(message),
                 }
+            if intent in ("task_complete", "task_delete"):
+                item = await self._resolve_item("tasks", "task", message)
+                action = "complete" if intent == "task_complete" else "delete"
+                return {"action": action, "id": item["id"], "title": item["title"]}
             return {"action": "list"}
+        if tool == "reminders":
+            if intent == "reminder_create":
+                return {
+                    "action": "create",
+                    "title": extract_reminder_title(message),
+                    "remind_at": parse_reminder_at(message).isoformat(),
+                }
+            if intent in ("reminder_complete", "reminder_delete"):
+                item = await self._resolve_item("reminders", "reminder", message)
+                action = "complete" if intent == "reminder_complete" else "delete"
+                return {"action": action, "id": item["id"], "title": item["title"]}
+            return {"action": "list"}
+        if tool == "search":
+            return {"query": self._extract_search_query(message)}
+        if tool == "documents":
+            return self._extract_document(message)
+        if tool == "code":
+            code, language = self._extract_code(message)
+            return {"code": code, "language": language or None}
         if tool == "rag":
             # summarize_document benefits from more context than a plain search
             limit = 10 if intent == "summarize_document" else 5
@@ -339,6 +519,54 @@ class SpideyAgent:
             # this default keeps the generic loop safe.
             return {"action": "latest"}
         return {}
+
+    async def _resolve_item(
+        self, tool_name: str, kind: str, message: str
+    ) -> dict:
+        """Resolve 'delete task 1' / 'complete the reminder to call mom' to a row.
+
+        Matches by 1-based ordinal, id prefix, or title substring. Raises
+        ToolError when nothing matches.
+        """
+        ref = self._extract_ref(message, kind)
+        out = await self.tools[tool_name].execute(action="list")
+        items = out.get("tasks" if tool_name == "tasks" else "reminders", [])
+        title_key = "title"
+        if ref:
+            if ref.isdigit():
+                idx = int(ref) - 1
+                if 0 <= idx < len(items):
+                    return items[idx]
+            lowered = ref.lower()
+            for item in items:
+                if item["id"] == ref or item["id"].startswith(ref):
+                    return item
+            for item in items:
+                if lowered in str(item.get(title_key, "")).lower():
+                    return item
+            raise ToolError(
+                f"I couldn't find a {kind} matching {ref!r}."
+            )
+        if len(items) == 1:
+            return items[0]
+        raise ToolError(
+            f"Which {kind}? Say e.g. 'delete {kind} 1' or match its title."
+        )
+
+    @staticmethod
+    def _extract_ref(message: str, kind: str) -> str | None:
+        m = re.search(
+            rf"\b(?:delete|remove|drop|cancel|complete|finish|mark)\b"
+            rf"\s+(?:the\s+)?{kind}s?\s+(?:called\s+|named\s+)?(.+)",
+            message,
+            re.IGNORECASE,
+        )
+        if m:
+            ref = m.group(1).strip()
+            ref = re.sub(r"\s+as\s+done\s*$", "", ref, flags=re.IGNORECASE)
+            ref = ref.rstrip(".?!").strip()
+            return ref or None
+        return None
 
     @staticmethod
     def _extract_remember(message: str) -> str:
@@ -364,9 +592,59 @@ class SpideyAgent:
 
     @staticmethod
     def _extract_due(message: str) -> str | None:
-        if "tomorrow" in message.lower():
-            return (date.today() + timedelta(days=1)).isoformat()
-        return None
+        # Owned by the task tool; the agent reuses it for chat extraction.
+        return parse_due(message)
+
+    @staticmethod
+    def _extract_search_query(message: str) -> str:
+        for pattern in (
+            r"search\s+the\s+web\s+for\s+(.+)",
+            r"search\s+(?:the\s+)?(?:web|internet|online)\s+(?:for\s+)?(.+)",
+            r"(?:find|get)\s+(?:me\s+)?information\s+about\s+(.+)",
+            r"\bgoogle\s+(.+)",
+        ):
+            m = re.search(pattern, message, re.IGNORECASE | re.DOTALL)
+            if m and m.group(1).strip():
+                return m.group(1).strip().rstrip(".")
+        return message.strip()
+
+    @staticmethod
+    def _extract_document(message: str) -> dict:
+        title, content, fmt = "Untitled document", "", "txt"
+        m = re.search(
+            r"titled\s+[\"']?([^\"':]+?)[\"']?\s*(?::|with\s+content)\s*(.+)",
+            message,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if m:
+            title = m.group(1).strip()
+            content = m.group(2).strip()
+        else:
+            m2 = re.search(
+                r"(?:create|make|write)\s+(?:a\s+)?(?:document|note)\s*:?\s*(.+)",
+                message,
+                re.IGNORECASE | re.DOTALL,
+            )
+            if m2:
+                content = m2.group(1).strip()
+        if re.search(r"\bmarkdown\b", message, re.IGNORECASE):
+            fmt = "md"
+        return {"action": "create", "title": title, "content": content, "format": fmt}
+
+    @staticmethod
+    def _extract_code(message: str) -> tuple[str, str]:
+        m = re.search(r"```(\w*)\s*\n?(.*?)```", message, re.DOTALL)
+        if m:
+            return m.group(2).strip(), m.group(1).strip()
+        m = re.search(
+            r"(?:explain\s+(?:this\s+)?code|what\s+does\s+(?:this|the)\s+code\s+do)"
+            r"\s*:?\s*(.+)",
+            message,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if m and m.group(1).strip():
+            return m.group(1).strip(), ""
+        return message.strip(), ""
 
     @staticmethod
     def _compose_facts(
@@ -404,6 +682,61 @@ class SpideyAgent:
                 )
                 return f"Your tasks:\n{lines}"
             return "No tasks yet — say 'create a task' to add one."
+        if intent == "task_complete":
+            task = tool_results.get("tasks", {}).get("task", {})
+            return f"Marked done: \"{task.get('title', '')}\"."
+        if intent == "task_delete":
+            deleted = tool_results.get("tasks", {})
+            return f"Deleted the task \"{deleted.get('title', '')}\"."
+        if intent == "reminder_create":
+            reminder = tool_results.get("reminders", {}).get("reminder", {})
+            at = reminder.get("remind_at")
+            text = reminder.get("text", "")
+            return f"Reminder set: {text}" + (f" (at {at})" if at else "")
+        if intent == "reminder_list":
+            reminders = tool_results.get("reminders", {}).get("reminders", [])
+            if reminders:
+                lines = "\n".join(
+                    f"- [{'x' if r.get('done') else ' '}] {r.get('text')}"
+                    + (f" (at {r['remind_at']})" if r.get("remind_at") else "")
+                    for r in reminders
+                )
+                return f"Your reminders:\n{lines}"
+            return "No reminders yet — say 'remind me to ...' to add one."
+        if intent == "reminder_complete":
+            reminder = tool_results.get("reminders", {}).get("reminder", {})
+            return f"Reminder done: \"{reminder.get('text', '')}\"."
+        if intent == "reminder_delete":
+            deleted = tool_results.get("reminders", {})
+            return f"Deleted the reminder \"{deleted.get('title', '')}\"."
+        if intent == "web_search":
+            search = tool_results.get("search", {})
+            if search.get("error"):
+                return search["error"]
+            results = search.get("results", [])
+            if not results:
+                return (
+                    "The web search came back empty — "
+                    "try rephrasing with different words."
+                )
+            lines = []
+            for r in results[:5]:
+                title = r.get("title", "")
+                url = r.get("url", "")
+                snippet = (r.get("snippet", "") or "")[:200]
+                lines.append(f"- {title} ({url})\n  {snippet}")
+            return "Here's what the web says:\n" + "\n".join(lines)
+        if intent == "document_create":
+            doc = tool_results.get("documents", {}).get("document", {})
+            return (
+                f"Document created: \"{doc.get('title')}\". "
+                f"Download it at {doc.get('download_url')}."
+            )
+        if intent == "code_explain":
+            code = tool_results.get("code", {})
+            lines = [code.get("explanation", "")]
+            lines.extend(f"- {o}" for o in code.get("observations", []))
+            return "\n".join(line for line in lines if line)
         if intent in ("knowledge_search", "summarize_document"):
             return SpideyAgent._compose_rag_facts(tool_results)
         if intent in ("resume_analyze", "resume_improve"):

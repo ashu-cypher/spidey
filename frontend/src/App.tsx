@@ -3,11 +3,12 @@ import { ActivityPanel } from './components/ActivityPanel';
 import { ChatPanel } from './components/ChatPanel';
 import { KnowledgePanel } from './components/KnowledgePanel';
 import { MemoryPanel } from './components/MemoryPanel';
+import { RemindersPanel } from './components/RemindersPanel';
 import { ResumePanel } from './components/ResumePanel';
 import { SettingsPanel } from './components/SettingsPanel';
 import { TasksPanel } from './components/TasksPanel';
 
-type Tab = 'chat' | 'activity' | 'knowledge' | 'resume' | 'memory' | 'tasks' | 'settings';
+type Tab = 'chat' | 'activity' | 'knowledge' | 'resume' | 'memory' | 'tasks' | 'reminders' | 'settings';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'chat', label: 'Chat' },
@@ -16,6 +17,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'resume', label: 'Resume' },
   { id: 'memory', label: 'Memory' },
   { id: 'tasks', label: 'Tasks' },
+  { id: 'reminders', label: 'Reminders' },
   { id: 'settings', label: 'Settings' },
 ];
 
@@ -57,11 +59,12 @@ export function App() {
           {tab === 'resume' && <ResumePanel />}
           {tab === 'memory' && <MemoryPanel />}
           {tab === 'tasks' && <TasksPanel />}
+          {tab === 'reminders' && <RemindersPanel />}
           {tab === 'settings' && <SettingsPanel />}
         </main>
 
         <footer className="mt-8 text-center font-mono text-[11px] text-gray-600">
-          SPIDEY — Phase 4 Resume
+          SPIDEY — Phase 5 Tools
         </footer>
       </div>
     </div>

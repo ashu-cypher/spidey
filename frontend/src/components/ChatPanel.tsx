@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { postChat } from '../api';
-import type { WorkflowRun, WorkflowStep } from '../api';
+import type { ConfirmationPayload, WorkflowRun, WorkflowStep } from '../api';
 import { WorkflowPanel } from './WorkflowPanel';
 
 interface ChatMessage {
@@ -16,8 +16,20 @@ const SUGGESTIONS = [
   'Hello Spidey.',
   'calculate 12 * 8',
   'remember that I am learning Python',
-  'what am I learning?',
+  'remind me to drink water tomorrow',
+  'search the web for the James Webb telescope',
 ];
+
+function parseConfirmation(result: string | null): ConfirmationPayload | null {
+  if (!result) return null;
+  try {
+    const data = JSON.parse(result) as ConfirmationPayload;
+    if (data && data.needs_confirmation && data.confirm_token) return data;
+  } catch {
+    // Not a confirmation payload — plain assistant text.
+  }
+  return null;
+}
 
 function upsert(steps: WorkflowStep[], step: WorkflowStep): WorkflowStep[] {
   const idx = steps.findIndex((s) => s.step_id === step.step_id);
@@ -32,8 +44,9 @@ export function ChatPanel({ onActivity }: Props) {
   const [input, setInput] = useState('');
   const [liveSteps, setLiveSteps] = useState<WorkflowStep[]>([]);
   const [busy, setBusy] = useState(false);
+  const [confirm, setConfirm] = useState<ConfirmationPayload | null>(null);
 
-  async function send(text: string) {
+  async function send(text: string, confirmToken?: string) {
     const message = text.trim();
     if (!message || busy) return;
     setMessages((m) => [...m, { role: 'user', text: message }]);
@@ -41,7 +54,7 @@ export function ChatPanel({ onActivity }: Props) {
     setBusy(true);
     setLiveSteps([]);
     try {
-      const { run_id } = await postChat(message);
+      const { run_id } = await postChat(message, confirmToken);
       const es = new EventSource(`/api/workflow/${encodeURIComponent(run_id)}/stream`);
       es.addEventListener('step_update', (e: Event) => {
         const step = JSON.parse((e as MessageEvent).data) as WorkflowStep;
@@ -50,7 +63,16 @@ export function ChatPanel({ onActivity }: Props) {
       es.addEventListener('done', (e: Event) => {
         const run = JSON.parse((e as MessageEvent).data) as WorkflowRun;
         setLiveSteps(run.steps);
-        setMessages((m) => [...m, { role: 'assistant', text: run.result ?? '(no response)' }]);
+        const payload = parseConfirmation(run.result);
+        if (payload) {
+          setConfirm(payload);
+          setMessages((m) => [
+            ...m,
+            { role: 'assistant', text: `Needs your confirmation: ${payload.proposal}` },
+          ]);
+        } else {
+          setMessages((m) => [...m, { role: 'assistant', text: run.result ?? '(no response)' }]);
+        }
         es.close();
         setBusy(false);
         if (onActivity) onActivity();
@@ -66,6 +88,21 @@ export function ChatPanel({ onActivity }: Props) {
       ]);
       setBusy(false);
     }
+  }
+
+  async function approveConfirm() {
+    if (!confirm || busy) return;
+    const { confirm_token: token, proposal } = confirm;
+    setConfirm(null);
+    await send(`Confirmed: ${proposal}`, token);
+  }
+
+  function cancelConfirm() {
+    setConfirm(null);
+    setMessages((m) => [
+      ...m,
+      { role: 'assistant', text: 'Cancelled — nothing was changed.' },
+    ]);
   }
 
   return (
@@ -113,14 +150,39 @@ export function ChatPanel({ onActivity }: Props) {
           ))}
         </div>
 
+        {confirm && (
+          <div className="mb-3 rounded-xl border border-amber-400/40 bg-amber-400/10 p-4">
+            <p className="mb-1 text-sm font-medium text-amber-200">
+              Confirmation needed
+            </p>
+            <p className="mb-3 text-sm text-gray-200">{confirm.proposal}</p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => void approveConfirm()}
+                disabled={busy}
+                className="rounded-lg bg-amber-400/20 border border-amber-400/50 px-4 py-1.5 text-sm font-medium text-amber-100 hover:bg-amber-400/30 disabled:opacity-40"
+              >
+                Confirm
+              </button>
+              <button
+                type="button"
+                onClick={cancelConfirm}
+                className="rounded-lg border border-white/10 bg-white/5 px-4 py-1.5 text-sm text-gray-300 hover:bg-white/10"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
         <form
           onSubmit={(e) => {
             e.preventDefault();
             void send(input);
           }}
           className="flex gap-2"
-        >
-          <input
+        >          <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder="Message Spidey…"

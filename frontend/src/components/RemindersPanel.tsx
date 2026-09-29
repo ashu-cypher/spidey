@@ -1,31 +1,36 @@
 import { useEffect, useState } from 'react';
-import { createTask, deleteTask, getTasks, setTaskDone } from '../api';
-import type { TaskItem } from '../api';
+import {
+  createReminder,
+  deleteReminder,
+  getReminders,
+  setReminderDone,
+} from '../api';
+import type { ReminderItem } from '../api';
 
-export function TasksPanel() {
-  const [tasks, setTasks] = useState<TaskItem[]>([]);
+export function RemindersPanel() {
+  const [reminders, setReminders] = useState<ReminderItem[]>([]);
   const [title, setTitle] = useState('');
-  const [due, setDue] = useState('');
+  const [when, setWhen] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   async function refresh() {
     try {
-      setTasks(await getTasks());
+      setReminders(await getReminders());
       setError(null);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to load tasks');
+      setError(err instanceof Error ? err.message : 'Failed to load reminders');
     }
   }
 
   useEffect(() => {
     let cancelled = false;
-    getTasks()
+    getReminders()
       .then((data) => {
-        if (!cancelled) setTasks(data);
+        if (!cancelled) setReminders(data);
       })
       .catch((err: unknown) => {
         if (!cancelled)
-          setError(err instanceof Error ? err.message : 'Failed to load tasks');
+          setError(err instanceof Error ? err.message : 'Failed to load reminders');
       });
     return () => {
       cancelled = true;
@@ -37,30 +42,30 @@ export function TasksPanel() {
     const t = title.trim();
     if (!t) return;
     try {
-      await createTask(t, due || null);
+      await createReminder(t, when || null);
       setTitle('');
-      setDue('');
+      setWhen('');
       await refresh();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to create task');
+      setError(err instanceof Error ? err.message : 'Failed to create reminder');
     }
   }
 
-  async function toggle(t: TaskItem) {
+  async function toggle(r: ReminderItem) {
     try {
-      await setTaskDone(t.id, !t.done);
+      await setReminderDone(r.id, !r.done);
       await refresh();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to update task');
+      setError(err instanceof Error ? err.message : 'Failed to update reminder');
     }
   }
 
   async function remove(id: string) {
     try {
-      await deleteTask(id);
+      await deleteReminder(id);
       await refresh();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to delete task');
+      setError(err instanceof Error ? err.message : 'Failed to delete reminder');
     }
   }
 
@@ -70,14 +75,14 @@ export function TasksPanel() {
         <input
           value={title}
           onChange={(e) => setTitle(e.target.value)}
-          placeholder="New task…"
+          placeholder="Remind me to…"
           className="flex-1 min-w-[180px] rounded-lg bg-void border border-white/10 px-4 py-2 text-sm text-gray-100 placeholder-gray-600 outline-none focus:border-accent/60"
         />
         <input
-          type="date"
-          value={due}
-          onChange={(e) => setDue(e.target.value)}
-          title="Due date"
+          type="datetime-local"
+          value={when}
+          onChange={(e) => setWhen(e.target.value)}
+          title="Remind at"
           className="rounded-lg bg-void border border-white/10 px-3 py-2 text-sm text-gray-300 outline-none focus:border-accent/60"
         />
         <button
@@ -85,49 +90,49 @@ export function TasksPanel() {
           disabled={!title.trim()}
           className="rounded-lg bg-accent/20 border border-accent/40 px-4 py-2 text-sm font-medium text-accent hover:bg-accent/30 disabled:opacity-40"
         >
-          Add
+          Set
         </button>
       </form>
 
       {error && <p className="text-sm text-red-400">{error}</p>}
 
-      {tasks.length === 0 ? (
+      {reminders.length === 0 ? (
         <p className="text-sm text-gray-500">
-          No tasks yet — ask Spidey to track something for you.
+          No reminders yet — try “remind me to call mom tomorrow”.
         </p>
       ) : (
         <ul className="space-y-2">
-          {tasks.map((t) => (
+          {reminders.map((r) => (
             <li
-              key={t.id}
+              key={r.id}
               className="flex items-center gap-3 rounded-xl bg-panel border border-white/10 px-4 py-3"
             >
               <button
                 type="button"
-                onClick={() => void toggle(t)}
-                title={t.done ? 'Reopen' : 'Mark done'}
+                onClick={() => void toggle(r)}
+                title={r.done ? 'Reopen' : 'Mark done'}
                 className={`font-mono text-base ${
-                  t.done ? 'text-green-400' : 'text-gray-600 hover:text-accent'
+                  r.done ? 'text-green-400' : 'text-gray-600 hover:text-accent'
                 }`}
               >
-                {t.done ? '✓' : '○'}
+                {r.done ? '✓' : '○'}
               </button>
               <span
                 className={`flex-1 text-sm ${
-                  t.done ? 'text-gray-500 line-through' : 'text-gray-200'
+                  r.done ? 'text-gray-500 line-through' : 'text-gray-200'
                 }`}
               >
-                {t.title}
+                {r.title}
               </span>
-              {t.due && (
+              {r.remind_at && (
                 <span className="font-mono text-[11px] text-gray-500">
-                  {new Date(t.due).toLocaleDateString()}
+                  {new Date(r.remind_at).toLocaleString()}
                 </span>
               )}
               <button
                 type="button"
-                onClick={() => void remove(t.id)}
-                title="Delete task"
+                onClick={() => void remove(r.id)}
+                title="Delete reminder"
                 className="text-gray-600 hover:text-red-400 text-sm px-1"
               >
                 ✕

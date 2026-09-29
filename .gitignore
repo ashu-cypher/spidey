@@ -34,3 +34,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# SPIDEY-generated documents (Phase 5)
+generated/

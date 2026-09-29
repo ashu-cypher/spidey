@@ -1,7 +1,13 @@
 // Typed client for the SPIDEY FastAPI backend (Phase 1 contract).
 
 export type StepStatus = 'WAITING' | 'RUNNING' | 'COMPLETED' | 'FAILED';
-export type RunStatus = 'running' | 'completed' | 'failed';
+export type RunStatus = 'running' | 'completed' | 'failed' | 'awaiting_confirmation';
+
+export interface ConfirmationPayload {
+  needs_confirmation: boolean;
+  proposal: string;
+  confirm_token: string;
+}
 
 export interface WorkflowStep {
   step_id: string;
@@ -55,11 +61,14 @@ async function json<T>(res: Response): Promise<T> {
   return (await res.json()) as T;
 }
 
-export async function postChat(message: string): Promise<{ run_id: string }> {
+export async function postChat(
+  message: string,
+  confirmToken?: string,
+): Promise<{ run_id: string }> {
   const res = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, confirm_token: confirmToken ?? null }),
   });
   return json(res);
 }
@@ -105,6 +114,121 @@ export async function getTasks(): Promise<TaskItem[]> {
   const res = await fetch('/api/tasks');
   const data = await json<{ tasks: TaskItem[] }>(res);
   return data.tasks;
+}
+
+export async function createTask(title: string, due?: string | null): Promise<TaskItem> {
+  const res = await fetch('/api/tasks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, due: due ?? null }),
+  });
+  const data = await json<{ task: TaskItem }>(res);
+  return data.task;
+}
+
+export async function setTaskDone(id: string, done: boolean): Promise<TaskItem> {
+  const res = await fetch(`/api/tasks/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ done }),
+  });
+  const data = await json<{ task: TaskItem }>(res);
+  return data.task;
+}
+
+export async function deleteTask(id: string): Promise<void> {
+  const res = await fetch(`/api/tasks/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  await json(res);
+}
+
+// --- Reminders (Phase 5) ----------------------------------------------------
+
+export interface ReminderItem {
+  id: string;
+  title: string;
+  text: string;
+  remind_at: string | null;
+  done: boolean;
+  created_at: string | null;
+}
+
+export async function getReminders(): Promise<ReminderItem[]> {
+  const res = await fetch('/api/reminders');
+  const data = await json<{ reminders: ReminderItem[] }>(res);
+  return data.reminders;
+}
+
+export async function createReminder(
+  title: string,
+  remindAt?: string | null,
+): Promise<ReminderItem> {
+  const res = await fetch('/api/reminders', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, remind_at: remindAt ?? null }),
+  });
+  const data = await json<{ reminder: ReminderItem }>(res);
+  return data.reminder;
+}
+
+export async function setReminderDone(id: string, done: boolean): Promise<ReminderItem> {
+  const res = await fetch(`/api/reminders/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ done }),
+  });
+  const data = await json<{ reminder: ReminderItem }>(res);
+  return data.reminder;
+}
+
+export async function deleteReminder(id: string): Promise<void> {
+  const res = await fetch(`/api/reminders/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  await json(res);
+}
+
+// --- Generated documents (Phase 5) ------------------------------------------
+
+export interface GeneratedDoc {
+  id: string;
+  title: string;
+  format: string;
+  created_at: string | null;
+  download_url: string;
+}
+
+export async function listDocs(): Promise<GeneratedDoc[]> {
+  const res = await fetch('/api/docs');
+  const data = await json<{ documents: GeneratedDoc[] }>(res);
+  return data.documents;
+}
+
+export async function createDoc(
+  title: string,
+  content: string,
+  format: 'md' | 'txt',
+): Promise<GeneratedDoc> {
+  const res = await fetch('/api/docs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, content, format }),
+  });
+  const data = await json<{ document: GeneratedDoc }>(res);
+  return data.document;
+}
+
+export async function deleteDoc(id: string): Promise<void> {
+  const res = await fetch(`/api/docs/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  await json(res);
+}
+
+export function docDownloadUrl(id: string): string {
+  return `/api/docs/${encodeURIComponent(id)}/download`;
 }
 
 export async function getHealth(): Promise<Health> {
