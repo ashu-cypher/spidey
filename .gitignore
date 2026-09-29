@@ -37,3 +37,6 @@ Thumbs.db
 
 # SPIDEY-generated documents (Phase 5)
 generated/
+
+# TypeScript build info
+*.tsbuildinfo

@@ -424,6 +424,7 @@ SPIDEY_DEBUG=false           # true → full step I/O + debug block in APIs
 ```bash
 .venv/bin/alembic upgrade head  # canonical schema path (creates tables)
 .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
 
 Frontend:
 
