@@ -1,15 +1,17 @@
 import { useState } from 'react';
 import { ActivityPanel } from './components/ActivityPanel';
 import { ChatPanel } from './components/ChatPanel';
+import { KnowledgePanel } from './components/KnowledgePanel';
 import { MemoryPanel } from './components/MemoryPanel';
 import { SettingsPanel } from './components/SettingsPanel';
 import { TasksPanel } from './components/TasksPanel';
 
-type Tab = 'chat' | 'activity' | 'memory' | 'tasks' | 'settings';
+type Tab = 'chat' | 'activity' | 'knowledge' | 'memory' | 'tasks' | 'settings';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'chat', label: 'Chat' },
   { id: 'activity', label: 'Activity' },
+  { id: 'knowledge', label: 'Knowledge' },
   { id: 'memory', label: 'Memory' },
   { id: 'tasks', label: 'Tasks' },
   { id: 'settings', label: 'Settings' },
@@ -49,13 +51,14 @@ export function App() {
         <main>
           {tab === 'chat' && <ChatPanel onActivity={() => setRefreshKey((k) => k + 1)} />}
           {tab === 'activity' && <ActivityPanel refreshKey={refreshKey} />}
+          {tab === 'knowledge' && <KnowledgePanel />}
           {tab === 'memory' && <MemoryPanel />}
           {tab === 'tasks' && <TasksPanel />}
           {tab === 'settings' && <SettingsPanel />}
         </main>
 
         <footer className="mt-8 text-center font-mono text-[11px] text-gray-600">
-          SPIDEY — Phase 1 core
+          SPIDEY — Phase 3 RAG
         </footer>
       </div>
     </div>

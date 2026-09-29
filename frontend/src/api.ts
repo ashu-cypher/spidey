@@ -111,3 +111,59 @@ export async function getHealth(): Promise<Health> {
   const res = await fetch('/api/health');
   return json(res);
 }
+
+// --- Knowledge base (Phase 3) ----------------------------------------------
+
+export interface KnowledgeDocument {
+  id: string;
+  filename: string;
+  title: string;
+  content_type: string;
+  status: string;
+  chunk_count: number;
+  created_at: string | null;
+}
+
+export interface KnowledgeResult {
+  chunk_id: string;
+  chunk_index: number;
+  content: string;
+  document_id: string;
+  source: string;
+  created_at: string | null;
+  score: number;
+}
+
+export async function listDocuments(): Promise<KnowledgeDocument[]> {
+  const res = await fetch('/api/knowledge/documents');
+  const data = await json<{ documents: KnowledgeDocument[] }>(res);
+  return data.documents;
+}
+
+export async function uploadDocument(file: File): Promise<KnowledgeDocument> {
+  const form = new FormData();
+  form.append('file', file);
+  const res = await fetch('/api/knowledge/upload', { method: 'POST', body: form });
+  const data = await json<{ document: KnowledgeDocument }>(res);
+  return data.document;
+}
+
+export async function deleteDocument(id: string): Promise<void> {
+  const res = await fetch(
+    `/api/knowledge/documents/${encodeURIComponent(id)}`,
+    { method: 'DELETE' },
+  );
+  await json(res);
+}
+
+export async function searchDocuments(
+  q: string,
+  limit = 5,
+): Promise<KnowledgeResult[]> {
+  const res = await fetch(
+    `/api/knowledge/search?q=${encodeURIComponent(q)}&limit=${limit}`,
+  );
+  const data = await json<{ results: KnowledgeResult[] }>(res);
+  return data.results;
+}
+

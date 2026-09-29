@@ -13,7 +13,17 @@ _VERIFY_KEYS: dict[str, tuple[str, ...]] = {
     "calculator": ("result",),
     "memory": ("results", "saved"),
     "tasks": ("task", "tasks"),
+    "rag": ("results", "documents"),
 }
+
+# Cosine-similarity score below this means the retrieval is too weak to trust.
+# Chosen for the 384-dim providers used in Phase 3 (documented in README):
+# related query/chunk pairs score well above it, unrelated pairs below.
+RAG_CONFIDENCE_THRESHOLD = 0.15
+
+LOW_CONFIDENCE_REPLY = (
+    "I couldn't find enough information in your documents to answer that reliably."
+)
 
 
 class SpideyAgent:
@@ -157,6 +167,10 @@ class SpideyAgent:
                     "due": self._extract_due(message),
                 }
             return {"action": "list"}
+        if tool == "rag":
+            # summarize_document benefits from more context than a plain search
+            limit = 10 if intent == "summarize_document" else 5
+            return {"action": "search", "query": message, "limit": limit}
         return {}
 
     @staticmethod
@@ -223,4 +237,31 @@ class SpideyAgent:
                 )
                 return f"Your tasks:\n{lines}"
             return "No tasks yet — say 'create a task' to add one."
+        if intent in ("knowledge_search", "summarize_document"):
+            return SpideyAgent._compose_rag_facts(tool_results)
         return ""
+
+    @staticmethod
+    def _compose_rag_facts(tool_results: dict[str, dict]) -> str:
+        """Facts for RAG intents, with citation + confidence gating.
+
+        Memory (the memory tool) and knowledge (the rag tool) stay distinct:
+        document passages are cited per chunk, and low-confidence retrieval
+        yields exactly ``LOW_CONFIDENCE_REPLY`` — nothing before or after it.
+        """
+        results = tool_results.get("rag", {}).get("results", []) or []
+        best = max((float(r.get("score") or 0.0) for r in results), default=0.0)
+        if not results or best < RAG_CONFIDENCE_THRESHOLD:
+            return LOW_CONFIDENCE_REPLY
+        lines = []
+        for r in results:
+            source = r.get("source") or "document"
+            chunk_index = r.get("chunk_index", "?")
+            content = (r.get("content") or "")[:600]
+            lines.append(f"[{source}, chunk {chunk_index}]\n{content}")
+        return (
+            "Based on your uploaded documents:\n\n"
+            + "\n\n".join(lines)
+            + "\n\nAnswer using only these passages, citing each claim like "
+            "[filename, chunk N]."
+        )

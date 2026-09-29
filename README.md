@@ -64,7 +64,8 @@ Architecture:
 - Live backend: **PostgreSQL 16 + pgvector 0.6.0** at `127.0.0.1:5432`
   (database `spidey`), SQLAlchemy 2.0 models, lazy engine creation.
 - Tables: `users`, `conversations`, `messages`, `memories`, `documents`,
-  `document_chunks` (pgvector `VECTOR(1536)` embedding when
+  `document_chunks` (pgvector `VECTOR(384)` embedding since the Phase 3
+  migration `a4f7c2d91e5b` — was `VECTOR(1536)` — when
   `VECTOR_BACKEND=pgvector`, JSON otherwise), `tasks`, `reminders`,
   `tool_calls`, `workflow_runs`, `workflow_steps`, `resume_versions`,
   `settings`.
@@ -84,10 +85,53 @@ Architecture:
   `init_db()` / `create_all` on app startup is the dev convenience bootstrap
   (it also seeds the default `local` user).
 
+## Phase 3 — RAG knowledge base (implemented)
+
+- **Embedding provider: `HashingEmbeddingProvider` (DEV fallback) — ACTIVE.**
+  `sentence-transformers` could not be installed in this environment
+  (torch download too large / disk ran out), so the pipeline runs on the
+  deterministic char-ngram hashing provider (`name = "hashing-dev-fallback"`).
+  It is **not semantic** — retrieval is keyword/lexical-overlap based — but the
+  full RAG loop (ingest → chunk → embed → vector search → grounded answer)
+  works end to end. Swap in `sentence-transformers` later (`pip install
+  sentence-transformers`) and `get_embedding_provider()` will pick it up
+  automatically; the active provider is logged at startup.
+- **Embedding dimension: 384** for every provider. Alembic revision
+  `a4f7c2d91e5b` migrates `document_chunks.embedding` from `VECTOR(1536)` to
+  `VECTOR(384)` on the pgvector backend (JSON fallback on sqlite/local),
+  and adds `documents(filename, content_type, status, chunk_count)` plus
+  `document_chunks(source, created_at)`.
+- **Vector backend: pgvector** (live Postgres 16 + pgvector 0.6.0) with
+  `embedding <=> :vec` cosine-distance ordering; `LocalVectorStore`
+  (brute-force Python cosine) is used when `VECTOR_BACKEND=local`
+  (e.g. the sqlite test suite). Scores are cosine similarities on both.
+- **Upload limits:** `.pdf` / `.docx` / `.txt` / `.md` only, ≤ 10 MB
+  (Content-Length check + read cap), 422 on bad type, non-empty extraction
+  required. Originals stored under `backend/uploads/` (gitignored, never
+  committed). Chunking: ~400 words with 50-word overlap, `chunk_index` recorded.
+- **Agent wiring (memory vs RAG stay distinct):** new intents
+  `knowledge_search` ("search my documents…", "find in my files…") and
+  `summarize_document`, both routed to the `rag` tool (`"rag": ("results",
+  "documents")` added to `_VERIFY_KEYS`). Grounded answers start with
+  "Based on your uploaded documents" and cite `[filename, chunk N]`;
+  below the **confidence threshold (cosine < 0.15)** the agent replies with
+  exactly: "I couldn't find enough information in your documents to answer
+  that reliably."
+- **Knowledge endpoints:** `POST /api/knowledge/upload` (multipart →
+  `{"document": {...}}`), `GET /api/knowledge/documents`,
+  `GET /api/knowledge/search?q=&limit=5` → `{"results": [...]}` (each with
+  `document_id`, `chunk_id`, `chunk_index`, `content`, `score`, `source`,
+  `created_at`), `DELETE /api/knowledge/documents/{id}` (removes chunks, row
+  and file). No tracebacks to users — clean `HTTPException` messages.
+- **Knowledge tab (frontend):** file upload, document list (name / type /
+  date / status / chunk count / delete), search box with cited results
+  (`[source, chunk N]` + score). `npm run build` passes.
+
 ## Roadmap
 
 - **Phase 2 — Memory:** PostgreSQL, memory tables, retrieval, management UI ✅
-- **Phase 3 — RAG:** document upload, chunking, embeddings, pgvector, sources
+- **Phase 3 — RAG:** document upload, chunking, embeddings, pgvector, sources ✅
+  (embeddings on DEV hashing fallback — real semantic model is a future swap-in)
 - **Phase 4 — Resume intelligence:** CV parsing, analysis, job matching, versioning
 - **Phase 5 — Tools:** reminders, web search, document tools, code tool
 - **Phase 6 — Voice:** speech-to-text, TTS, microphone UI
@@ -141,6 +185,10 @@ bash ~/workspace/spidey/dev-setup-postgres.sh
 | POST   | `/api/memory`               | `{"content": str, ...}` → `{"saved": {...}}` |
 | DELETE | `/api/memory/{memory_id}`     | → `{"deleted": id}` (404 if unknown)        |
 | GET    | `/api/tasks`                | Task list                                |
+| POST   | `/api/knowledge/upload`     | Multipart file (≤10 MB) → `{"document": {...}}` |
+| GET    | `/api/knowledge/documents`  | Document list with metadata              |
+| GET    | `/api/knowledge/search`     | `?q=&limit=` → `{"results": [...]}` (cited chunks) |
+| DELETE | `/api/knowledge/documents/{id}` | Remove document + chunks + file (404 if unknown) |
 
 ## Safety
 

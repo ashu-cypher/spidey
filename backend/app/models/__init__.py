@@ -23,6 +23,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from app.config import settings
+from app.rag.embeddings import EMBEDDING_DIM
 
 __all__ = [
     "Base",
@@ -55,7 +56,7 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def _embedding_column(dim: int = 1536):
+def _embedding_column(dim: int = EMBEDDING_DIM):
     """Conditional embedding column: pgvector Vector on postgres, JSON elsewhere."""
     if settings.vector_backend == "pgvector":
         from pgvector.sqlalchemy import Vector
@@ -117,7 +118,11 @@ class Document(Base):
         String(64), ForeignKey("users.id"), default="local", index=True
     )
     title: Mapped[str] = mapped_column(String(256), default="")
+    filename: Mapped[str] = mapped_column(String(512), default="")
+    content_type: Mapped[str] = mapped_column(String(128), default="")
     source: Mapped[str] = mapped_column(String(512), default="")
+    status: Mapped[str] = mapped_column(String(32), default="ready")
+    chunk_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 
@@ -131,6 +136,8 @@ class DocumentChunk(Base):
     chunk_index: Mapped[int] = mapped_column(Integer, default=0)
     content: Mapped[str] = mapped_column(Text)
     embedding = _embedding_column()
+    source: Mapped[str] = mapped_column(String(512), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 
 class Task(Base):

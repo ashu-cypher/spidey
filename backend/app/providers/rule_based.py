@@ -21,12 +21,42 @@ _GREETING = re.compile(
     r"\b(hello|hi|hey|good morning|good afternoon|good evening)\b", re.IGNORECASE
 )
 _HELP = re.compile(r"\bhelp\b|what can you do", re.IGNORECASE)
+# Knowledge base (RAG) intents — kept distinct from memory intents: the memory
+# tool holds personal facts, the rag tool searches uploaded documents.
+_KNOWLEDGE = re.compile(
+    r"\b(search|find|look)\b.{0,30}\b(my\s+)?(documents?|files?)\b"
+    r"|\bwhat does my document say\b"
+    r"|\b(in|from|within)\s+my\s+(documents?|files?)\b"
+    r"|\bmy\s+(documents?|files?)\s+say\b",
+    re.IGNORECASE,
+)
+_SUMMARIZE_DOC = re.compile(
+    r"\bsummariz(e|ing)\b.{0,40}\b(this\s+)?(document|file)\b"
+    r"|\bsummarize\s+my\s+(\S+)",
+    re.IGNORECASE,
+)
 
 
 class RuleBasedProvider(AIProvider):
     name = "rule_based"
 
     def _classify(self, text: str) -> dict:
+        if _SUMMARIZE_DOC.search(text):
+            return {
+                "intent": "summarize_document",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["rag"],
+                "response_mode": "grounded",
+            }
+        if _KNOWLEDGE.search(text):
+            return {
+                "intent": "knowledge_search",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["rag"],
+                "response_mode": "grounded",
+            }
         if _REMEMBER.search(text):
             return {
                 "intent": "remember",
@@ -102,8 +132,10 @@ class RuleBasedProvider(AIProvider):
             return "Hello. Spidey here — what are we tackling?"
         if intent == "help":
             return (
-                "I can calculate, remember things, manage tasks, and chat. "
-                "Try: 'calculate 12 * 8', 'remember that I am learning Python', "
+                "I can calculate, remember things, manage tasks, search your "
+                "uploaded documents, and chat. Try: 'calculate 12 * 8', "
+                "'remember that I am learning Python', "
+                "'search my documents for the refund policy', "
                 "or 'create a task for tomorrow'."
             )
         return (
