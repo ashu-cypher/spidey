@@ -1,0 +1,24 @@
+# SPIDEY dev dependencies (Phase 2+). The Python backend and the
+# React frontend run locally; only the database lives in Docker.
+# Usage: docker compose up -d
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: spidey-postgres
+    environment:
+      POSTGRES_USER: spidey
+      POSTGRES_PASSWORD: spidey
+      POSTGRES_DB: spidey
+    ports:
+      - "5432:5432"
+    volumes:
+      - spidey-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spidey -d spidey"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  spidey-pgdata:
