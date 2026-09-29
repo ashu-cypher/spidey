@@ -56,11 +56,37 @@ Architecture:
 - Tool system with common interface: `calculator`, `memory`, `tasks`
 - Workflow engine: every agent run is a `WorkflowRun` of `WorkflowStep`s
   (WAITING / RUNNING / COMPLETED / FAILED) with timing, visible live in the UI
-- In-memory stores (persistent PostgreSQL + pgvector arrive in Phase 2/3)
+- PostgreSQL + SQLAlchemy 2.0 persistence layer (see Phase 2 below);
+  workflow-run and task history DB persistence lands in Phase 7
+
+## Phase 2 — Persistent memory (implemented)
+
+- Live backend: **PostgreSQL 16 + pgvector 0.6.0** at `127.0.0.1:5432`
+  (database `spidey`), SQLAlchemy 2.0 models, lazy engine creation.
+- Tables: `users`, `conversations`, `messages`, `memories`, `documents`,
+  `document_chunks` (pgvector `VECTOR(1536)` embedding when
+  `VECTOR_BACKEND=pgvector`, JSON otherwise), `tasks`, `reminders`,
+  `tool_calls`, `workflow_runs`, `workflow_steps`, `resume_versions`,
+  `settings`.
+- `MemoryTool` rewritten on the DB: same `save`/`recall`/`list`/`delete`
+  interface and result keys; auto-categorization kept; `temporary`
+  (or importance < 0.4) memories get `expires_at = now + 7 days`; recall and
+  list filter out expired rows; recall orders by keyword overlap, then
+  importance.
+- New endpoints: `POST /api/memory` (`{"content", "category"?, "importance"?}`
+  → `{"saved": {...}}`; 422 on empty content),
+  `DELETE /api/memory/{memory_id}` → `{"deleted": id}` (404 on unknown id);
+  `GET /api/memory` keeps its `{"memories": [...]}` shape.
+- Memory tab is real: list (content, category, importance bar, created date),
+  add-memory form, delete button.
+- Migrations: Alembic (`backend/alembic/`, initial revision `031bbd97dc21`).
+  **Canonical schema path: `alembic upgrade head`** (run from `backend/`).
+  `init_db()` / `create_all` on app startup is the dev convenience bootstrap
+  (it also seeds the default `local` user).
 
 ## Roadmap
 
-- **Phase 2 — Memory:** PostgreSQL, memory tables, retrieval, management UI
+- **Phase 2 — Memory:** PostgreSQL, memory tables, retrieval, management UI ✅
 - **Phase 3 — RAG:** document upload, chunking, embeddings, pgvector, sources
 - **Phase 4 — Resume intelligence:** CV parsing, analysis, job matching, versioning
 - **Phase 5 — Tools:** reminders, web search, document tools, code tool
@@ -86,10 +112,19 @@ npm install
 npm run dev      # http://localhost:5173
 ```
 
-Database (Phase 2+, optional for now):
+Database (Phase 2+):
 
 ```bash
-docker compose up -d
+docker compose up -d            # or use the local PostgreSQL 16
+cd backend
+.venv/bin/alembic upgrade head  # canonical schema path
+```
+
+PostgreSQL recovery (the data dir lives outside `~` and is ephemeral — if the
+DB is gone after a VM replacement):
+
+```bash
+bash ~/workspace/spidey/dev-setup-postgres.sh
 ```
 
 ## API
@@ -103,6 +138,8 @@ docker compose up -d
 | GET    | `/api/workflow/{run_id}/stream` | SSE live step updates                |
 | GET    | `/api/activity`             | Past runs, newest first                  |
 | GET    | `/api/memory`               | Stored memories                          |
+| POST   | `/api/memory`               | `{"content": str, ...}` → `{"saved": {...}}` |
+| DELETE | `/api/memory/{memory_id}`     | → `{"deleted": id}` (404 if unknown)        |
 | GET    | `/api/tasks`                | Task list                                |
 
 ## Safety

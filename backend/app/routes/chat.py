@@ -19,6 +19,12 @@ class ChatRequest(BaseModel):
     message: str
 
 
+class MemoryCreateRequest(BaseModel):
+    content: str
+    category: str | None = None
+    importance: float | None = None
+
+
 @router.post("/api/chat")
 async def post_chat(req: ChatRequest):
     run = engine.create_run(req.message)
@@ -86,6 +92,33 @@ async def activity():
 @router.get("/api/memory")
 async def memories():
     return await TOOL_REGISTRY["memory"].execute(action="list")
+
+
+@router.post("/api/memory")
+async def create_memory(req: MemoryCreateRequest):
+    from app.tools.base import ToolError
+
+    if not req.content.strip():
+        raise HTTPException(422, "content must not be empty")
+    try:
+        return await TOOL_REGISTRY["memory"].execute(
+            action="save",
+            content=req.content.strip(),
+            category=req.category,
+            importance=req.importance,
+        )
+    except ToolError as exc:
+        raise HTTPException(400, exc.user_message)
+
+
+@router.delete("/api/memory/{memory_id}")
+async def delete_memory(memory_id: str):
+    from app.tools.base import ToolError
+
+    try:
+        return await TOOL_REGISTRY["memory"].execute(action="delete", id=memory_id)
+    except ToolError as exc:
+        raise HTTPException(404, exc.user_message)
 
 
 @router.get("/api/tasks")

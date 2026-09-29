@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     api_host: str = "127.0.0.1"
     api_port: int = 8000
     database_url: str = ""
+    vector_backend: str = "local"
+    spidey_debug: bool = False
 
 
 settings = Settings()

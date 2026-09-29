@@ -80,6 +80,27 @@ export async function getMemories(): Promise<MemoryItem[]> {
   return data.memories;
 }
 
+export async function createMemory(
+  content: string,
+  category?: string,
+  importance?: number,
+): Promise<MemoryItem> {
+  const res = await fetch('/api/memory', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content, category, importance }),
+  });
+  const data = await json<{ saved: MemoryItem }>(res);
+  return data.saved;
+}
+
+export async function deleteMemory(id: string): Promise<void> {
+  const res = await fetch(`/api/memory/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  await json(res);
+}
+
 export async function getTasks(): Promise<TaskItem[]> {
   const res = await fetch('/api/tasks');
   const data = await json<{ tasks: TaskItem[] }>(res);

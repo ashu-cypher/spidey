@@ -1,7 +1,10 @@
 import re
-import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import or_, select
+
+from app.database import get_session
+from app.models import Memory
 from app.tools.base import BaseTool, ToolError
 
 _STOPWORDS = {
@@ -20,9 +23,22 @@ _CATEGORY_RULES = [
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
+_TEMPORARY_TTL = timedelta(days=7)
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _to_dict(row: Memory) -> dict:
+    return {
+        "id": row.id,
+        "content": row.content,
+        "category": row.category,
+        "importance": row.importance,
+        "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
 
 
 class MemoryTool(BaseTool):
@@ -38,13 +54,11 @@ class MemoryTool(BaseTool):
             "limit": {"type": "integer"},
             "category": {"type": "string"},
             "importance": {"type": "number"},
+            "include_expired": {"type": "boolean"},
         },
         "required": ["action"],
     }
     output_schema = {"action": "str"}
-
-    def __init__(self) -> None:
-        self._store: list[dict] = []
 
     @staticmethod
     def _categorize(content: str) -> tuple[str, float]:
@@ -62,49 +76,80 @@ class MemoryTool(BaseTool):
         action = kwargs.get("action")
 
         if action == "save":
-            content = kwargs.get("content")
-            if not content:
-                raise ToolError("Cannot save an empty memory.")
-            category = kwargs.get("category")
-            importance = kwargs.get("importance")
-            if category is None or importance is None:
-                auto_cat, auto_imp = self._categorize(content)
-                category = category or auto_cat
-                importance = auto_imp if importance is None else importance
-            item = {
-                "id": uuid.uuid4().hex[:8],
-                "content": content,
-                "category": category,
-                "importance": float(importance),
-                "created_at": _now_iso(),
-            }
-            self._store.append(item)
-            return {"saved": item}
-
+            return self._save(kwargs)
         if action == "recall":
-            query = kwargs.get("query")
-            if not query:
-                raise ToolError("Recall needs a query.")
-            limit = kwargs.get("limit", 5)
-            q_tokens = self._tokens(query)
-            scored: list[tuple[float, dict]] = []
-            for item in self._store:
-                m_tokens = self._tokens(item["content"])
-                score = len(q_tokens & m_tokens) / max(1, len(q_tokens))
-                if score > 0:
-                    scored.append((score, item))
-            scored.sort(key=lambda pair: pair[0], reverse=True)
-            return {"results": [item for _, item in scored[:limit]]}
-
+            return self._recall(kwargs)
         if action == "list":
-            return {"memories": list(self._store)}
-
+            return self._list(kwargs)
         if action == "delete":
-            memory_id = kwargs.get("id")
-            for item in self._store:
-                if item["id"] == memory_id:
-                    self._store.remove(item)
-                    return {"deleted": memory_id}
-            raise ToolError("Memory not found.")
-
+            return self._delete(kwargs)
         raise ToolError(f"Unknown memory action: {action!r}.")
+
+    def _save(self, kwargs: dict) -> dict:
+        content = (kwargs.get("content") or "").strip()
+        if not content:
+            raise ToolError("Cannot save an empty memory.")
+        category = kwargs.get("category")
+        importance = kwargs.get("importance")
+        if category is None or importance is None:
+            auto_cat, auto_imp = self._categorize(content)
+            category = category or auto_cat
+            importance = auto_imp if importance is None else importance
+        importance = float(importance)
+        expires_at = None
+        if category == "temporary" or importance < 0.4:
+            expires_at = _utcnow() + _TEMPORARY_TTL
+        with get_session() as session:
+            row = Memory(
+                user_id=kwargs.get("user_id") or "local",
+                content=content,
+                category=category,
+                importance=importance,
+                expires_at=expires_at,
+            )
+            session.add(row)
+            session.flush()
+            return {"saved": _to_dict(row)}
+
+    def _recall(self, kwargs: dict) -> dict:
+        query = (kwargs.get("query") or "").strip()
+        if not query:
+            raise ToolError("Recall needs a query.")
+        limit = int(kwargs.get("limit") or 5)
+        q_tokens = self._tokens(query)
+        now = _utcnow()
+        with get_session() as session:
+            rows = session.execute(
+                select(Memory).where(
+                    or_(Memory.expires_at.is_(None), Memory.expires_at > now)
+                )
+            ).scalars().all()
+            scored: list[tuple[float, float, Memory]] = []
+            for row in rows:
+                m_tokens = self._tokens(row.content)
+                overlap = len(q_tokens & m_tokens) / max(1, len(q_tokens))
+                if overlap > 0:
+                    scored.append((overlap, row.importance or 0.0, row))
+            scored.sort(key=lambda pair: (pair[0], pair[1]), reverse=True)
+            return {"results": [_to_dict(row) for _, _, row in scored[:limit]]}
+
+    def _list(self, kwargs: dict) -> dict:
+        include_expired = bool(kwargs.get("include_expired", False))
+        now = _utcnow()
+        with get_session() as session:
+            stmt = select(Memory).order_by(Memory.created_at.desc())
+            if not include_expired:
+                stmt = stmt.where(
+                    or_(Memory.expires_at.is_(None), Memory.expires_at > now)
+                )
+            rows = session.execute(stmt).scalars().all()
+            return {"memories": [_to_dict(row) for row in rows]}
+
+    def _delete(self, kwargs: dict) -> dict:
+        memory_id = kwargs.get("id")
+        with get_session() as session:
+            row = session.get(Memory, memory_id)
+            if row is None:
+                raise ToolError("Memory not found.")
+            session.delete(row)
+            return {"deleted": memory_id}
