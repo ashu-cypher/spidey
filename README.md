@@ -399,6 +399,54 @@ expiry). Direct REST deletes (explicit UI clicks) don't need confirmation.
   observability, one transient retry, bounded re-plan, `SPIDEY_DEBUG` ✅
   (history survives restarts; embeddings still the DEV hashing fallback)
 
+## J.A.R.V.I.S. transformation
+
+SPIDEY now runs a J.A.R.V.I.S. (Just A Rather Very Intelligent System) persona
+and Stark HUD interface on top of the same agent core — all existing tools,
+routes, DB models, and workflows are unchanged.
+
+**Persona** — the assistant addresses you as "sir", speaks calm/witty/politely
+("Right away, sir.", "Running diagnostics now, sir."). Set `PERSONA_NAME` in
+`backend/.env` to rename it. The OpenAI/Ollama providers send a JARVIS system
+prompt; the default rule-based provider needs no API key.
+
+**Voice** (browser only — Chrome/Edge recommended):
+- Requires microphone permission and a secure context (HTTPS or `localhost`).
+- Continuous hands-free mode with wake-word gating: say "Jarvis" / "Hey Jarvis"
+  to wake it; it sleeps again after 60 s of silence.
+- Barge-in: speaking while J.A.R.V.I.S. talks stops its speech and it listens.
+- British voice auto-selected (`Google UK English Male` → `Daniel` → `en-GB` →
+  default); pitch/rate adjustable in the Voice & Persona tab.
+- Voice was build-verified only (no microphone in this environment).
+
+**HUD** — 7 tabs: Command Center (arc reactor + gauges + transcript), Agent
+Workflows & Logs, System & Diagnostics, Security & Protocols, Knowledge &
+Memory Core, Tasks & Mission Board, Voice & Persona Settings. All visuals are
+synthesized in-browser (Web Audio SFX, Canvas reactor) — zero external assets.
+
+**New backend endpoints**
+
+| Method | Path                        | Description                              |
+| ------ | --------------------------- | ---------------------------------------- |
+| GET    | `/api/system/metrics`       | CPU/RAM/disk/uptime/battery of the **server** machine |
+| GET    | `/api/protocols`            | 5 scripted protocols (Clean Slate, House Party, Sentry Mode, Mute Audio, Silent Running) |
+| POST   | `/api/protocols/trigger`    | `{"id": str}` → scripted JARVIS response + audit row |
+| GET    | `/api/protocols/audit`      | Last 50 protocol triggers                |
+| GET    | `/api/events/stream`        | SSE: `reminder_due` / `protocol` events + heartbeats |
+
+**System controller safety** — the `system` tool auto-runs a read-only
+allowlist only (`ls`, `ps`, `df`, `du`, `uptime`, `whoami`, `date`, `echo`,
+`hostname`, `pwd`, `free`, `id`, `uname`; `cat`/`head`/`tail` restricted to
+files under `~/workspace` or `/tmp`). Anything else requires explicit
+confirmation through the existing chat `confirm_token` flow, exactly like other
+destructive actions. `open_website` always requires confirmation. Note: metrics
+and commands execute on the machine running the backend (the server), not on
+your local PC, unless you run the backend locally.
+
+**Scheduled protocols** — a background task ticks every 30 s; due reminders are
+published on the event stream and the HUD speaks them proactively
+("Sir, reminder: …"). Toggle proactive voice in Voice & Persona settings.
+
 ## Quickstart
 
 Backend:
