@@ -1,5 +1,6 @@
 import asyncio
 import json
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
@@ -31,6 +32,9 @@ engine.add_finish_hook(persist_run)
 class ChatRequest(BaseModel):
     message: str = ""
     confirm_token: str | None = None
+    # Recent conversation turns for continuity (pronoun resolution). Bounded
+    # to the last 10 in post_chat before reaching the agent.
+    history: list[dict] = []
 
 
 class MemoryCreateRequest(BaseModel):
@@ -65,6 +69,12 @@ class DocumentCreateRequest(BaseModel):
 
 @router.post("/api/chat")
 async def post_chat(req: ChatRequest):
+    # Keep only well-formed turns, oldest first, capped at the last 10.
+    history = [
+        {"role": h.get("role"), "content": h.get("content", "")}
+        for h in (req.history or [])
+        if isinstance(h, dict) and h.get("role") in ("user", "assistant")
+    ][-10:]
     if req.confirm_token:
         # User approved a pending "confirm"-level action: run it through the
         # normal workflow (new run with Execute/Verify steps).
@@ -73,17 +83,17 @@ async def post_chat(req: ChatRequest):
         except ToolError as exc:
             raise HTTPException(400, exc.user_message)
         run = engine.create_run(f"confirmed: {pending['proposal']}")
-        asyncio.create_task(_execute_pending(run.workflow_id, pending))
+        asyncio.create_task(_execute_pending(run.workflow_id, pending, history))
         return {"run_id": run.workflow_id}
     run = engine.create_run(req.message)
-    asyncio.create_task(_execute(run.workflow_id, req.message))
+    asyncio.create_task(_execute(run.workflow_id, req.message, history))
     return {"run_id": run.workflow_id}
 
 
-async def _execute(run_id: str, message: str):
+async def _execute(run_id: str, message: str, history: list[dict] | None = None):
     run = engine.get_run(run_id)
     try:
-        response = await agent.run(message, run, engine)
+        response = await agent.run(message, run, engine, history=history)
         # Agent normally finishes the run itself; this is a safety net.
         if engine.get_run(run_id).status == "running":
             engine.finish_run(run_id, "completed", result=response)
@@ -92,10 +102,12 @@ async def _execute(run_id: str, message: str):
             engine.finish_run(run_id, "failed", result="Spidey couldn't complete that step.")
 
 
-async def _execute_pending(run_id: str, pending: dict):
+async def _execute_pending(
+    run_id: str, pending: dict, history: list[dict] | None = None
+):
     run = engine.get_run(run_id)
     try:
-        response = await agent.run_confirmed(pending, run, engine)
+        response = await agent.run_confirmed(pending, run, engine, history=history)
         if engine.get_run(run_id).status == "running":
             engine.finish_run(run_id, "completed", result=response)
     except Exception:
@@ -280,6 +292,40 @@ async def delete_reminder(reminder_id: str):
         )
     except ToolError as exc:
         raise _tool_error(exc)
+
+
+# --- Proactive briefing (read-only) ------------------------------------------
+
+
+@router.get("/api/briefing")
+async def briefing():
+    """Read-only proactive briefing: pending task count plus reminders due
+    soon (within the next 60 minutes, including overdue ones). No side
+    effects — only the tools' list actions are used."""
+    tasks_out = await TOOL_REGISTRY["tasks"].execute(action="list")
+    pending_tasks = sum(
+        1 for t in tasks_out.get("tasks", []) if not t.get("done")
+    )
+    reminders_out = await TOOL_REGISTRY["reminders"].execute(action="list")
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    horizon = now + timedelta(minutes=60)
+    due_soon: list[dict] = []
+    for r in reminders_out.get("reminders", []):
+        if r.get("done") or not r.get("remind_at"):
+            continue
+        try:
+            at = datetime.fromisoformat(r["remind_at"]).replace(tzinfo=None)
+        except ValueError:
+            continue
+        if at <= horizon:
+            due_soon.append(
+                {
+                    "text": r.get("text") or r.get("title") or "",
+                    "remind_at": r["remind_at"],
+                }
+            )
+    due_soon.sort(key=lambda d: d["remind_at"])
+    return {"pending_tasks": pending_tasks, "due_soon": due_soon}
 
 
 # --- Generated documents (Phase 5) ------------------------------------------

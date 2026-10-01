@@ -40,7 +40,9 @@ class OpenAIProvider(AIProvider):
                 "OpenAI provider is not configured: set OPENAI_API_KEY."
             )
 
-    async def aclassify_intent(self, text: str) -> dict:
+    async def aclassify_intent(
+        self, text: str, history: list | None = None
+    ) -> dict:
         self._ensure_configured()
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -63,21 +65,26 @@ class OpenAIProvider(AIProvider):
         except Exception as exc:
             raise ProviderError(f"OpenAI request failed: {exc}") from exc
 
-    async def agenerate(self, text: str, context: str = "") -> str:
+    async def agenerate(
+        self, text: str, context: str = "", history: list | None = None
+    ) -> str:
         self._ensure_configured()
         user_text = f"{context}\n\nUser: {text}" if context else text
+        messages = [{"role": "system", "content": _JARVIS_SYSTEM_PROMPT}]
+        # Recent conversation turns so pronouns ("it", "that") resolve.
+        for turn in (history or [])[-10:]:
+            if not isinstance(turn, dict):
+                continue
+            role, content = turn.get("role"), str(turn.get("content") or "").strip()
+            if role in ("user", "assistant") and content:
+                messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": user_text})
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 resp = await client.post(
                     "https://api.openai.com/v1/chat/completions",
                     headers={"Authorization": f"Bearer {self.api_key}"},
-                    json={
-                        "model": self.model,
-                        "messages": [
-                            {"role": "system", "content": _JARVIS_SYSTEM_PROMPT},
-                            {"role": "user", "content": user_text},
-                        ],
-                    },
+                    json={"model": self.model, "messages": messages},
                 )
                 resp.raise_for_status()
                 return resp.json()["choices"][0]["message"]["content"]

@@ -11,13 +11,18 @@ _RECALL = re.compile(
 _TASK_CREATE = re.compile(
     r"\b((create|add)\s+(a\s+)?task|todo\b)", re.IGNORECASE
 )
+# Natural phrasing "add <thing> to my tasks" — checked BEFORE the
+# delete/complete intents because "finish" in the task title would otherwise
+# trip _TASK_COMPLETE ("finish ... tasks").
+_TASK_CREATE_ADD = re.compile(r"\badd\b.{0,60}\bto my tasks?\b", re.IGNORECASE)
 _TASK_LIST = re.compile(
     r"\b(list|show)\b.{0,20}\btasks?\b|\bmy tasks\b", re.IGNORECASE
 )
 # Phase 5 intents. "remind me to" used to route to task_create; it now owns
 # reminders. These are checked BEFORE the generic task intents below.
 _REMINDER_CREATE = re.compile(
-    r"\bremind me to\b|\bset\s+(?:a\s+)?reminders?\b", re.IGNORECASE
+    r"\bremind me to\b|\bremind me (in|at)\b|\bset\s+(?:a\s+)?reminders?\b",
+    re.IGNORECASE,
 )
 _REMINDER_COMPLETE = re.compile(
     r"\b(complete|finish|mark)\b.{0,30}\breminders?\b"
@@ -39,7 +44,8 @@ _TASK_DELETE = re.compile(
 )
 _TASK_COMPLETE = re.compile(
     r"\b(complete|finish|mark)\b.{0,30}\btasks?\b"
-    r"|\btasks?\b.{0,20}\b(done|completed)\b",
+    r"|\btasks?\b.{0,20}\b(done|completed)\b"
+    r"|\bmark\b.{0,50}\bcomplete\b",
     re.IGNORECASE,
 )
 # Web search — checked AFTER _KNOWLEDGE so "search my documents" stays RAG.
@@ -47,6 +53,7 @@ _WEB_SEARCH = re.compile(
     r"\bsearch\b.{0,20}\b(web|internet|online)\b"
     r"|\bsearch\s+the\s+web\s+for\b"
     r"|\b(find|get)\b.{0,25}\binformation\s+about\b"
+    r"|\bsearch\b.{0,30}\b(latest|news)\b"
     r"|\bgoogle\b",
     re.IGNORECASE,
 )
@@ -108,11 +115,78 @@ _RESUME_ANALYZE = re.compile(
     re.IGNORECASE,
 )
 
+# Conversation continuity — pronoun follow-ups ("why would I use it?",
+# "tell me more about it") and recall of the current conversation ("what
+# did we discuss earlier?"). Both need the request's conversation history.
+# The follow-up only fires when the history yields a real topic; without
+# one it falls through so we never invent an answer.
+_FOLLOWUP_PRONOUN = re.compile(
+    r"\b(it|that|this|they|them)\b.{0,30}\b(why|how|what|when|where|who)\b"
+    r"|\b(why|how|what|when|where|who)\b.{0,30}\b(it|that|this|they|them)\b",
+    re.IGNORECASE,
+)
+_FOLLOWUP_BARE = re.compile(
+    r"^\s*(why\??|tell me more\.?|go on\.?|and then\??)\s*$", re.IGNORECASE
+)
+# "tell me more" with an optional pronoun tail, e.g. "tell me more about
+# it" / "can you tell me more about that?" — conversational follow-ups,
+# not standalone commands.
+_FOLLOWUP_MORE = re.compile(
+    r"\btell me more\b(\s+about\s+(it|that|this|them))?[\s.?!]*$",
+    re.IGNORECASE,
+)
+_CONVERSATION_RECALL = re.compile(
+    r"\bwhat did we (discuss|talk about)\b"
+    r"|\bwhat were we talking about\b"
+    r"|\bwhat have we (been )?(discussing|talking about|discussed)\b"
+    r"|\bsummariz(e|ing)\b.{0,20}\b(our|this)\b.{0,20}\bconversation\b",
+    re.IGNORECASE,
+)
+
+# Question scaffolding stripped to reveal the topic of a prior user turn
+# ("What is RAG?" -> "RAG"; "remind me to call mom" -> "call mom").
+_TOPIC_LEADERS = re.compile(
+    r"^(?:what(?:'s|s)?|which|who|whom|whose|when|where|why|how|is|are|was|were"
+    r"|do|does|did|can|could|should|would|will|shall|may|might|have|has|had"
+    r"|tell me|explain|define|describe|remind me to|remind me|create a task"
+    r"|add a task|search(?: the web)? for|google)\b\s*",
+    re.IGNORECASE,
+)
+_TOPIC_ARTICLES = re.compile(r"^(?:the|a|an|my|this|that)\s+", re.IGNORECASE)
+
+
+def _extract_topic(text: str) -> str:
+    """Pull the key phrase from a user turn ("What is RAG?" -> "RAG").
+
+    Used for follow-up and conversation-recall replies. Real data only: an
+    empty string means no topic could be found and the caller must fall
+    through instead of inventing one.
+    """
+    cleaned = re.sub(r"[?!.,;:]+$", "", (text or "").strip())
+    prev = None
+    while prev != cleaned:
+        prev = cleaned
+        cleaned = _TOPIC_LEADERS.sub("", cleaned).strip()
+        cleaned = _TOPIC_ARTICLES.sub("", cleaned).strip()
+    cleaned = re.sub(r"\s+(please|pls)$", "", cleaned, flags=re.IGNORECASE)
+    cleaned = cleaned.strip()
+    # Bound the length so a long prior message can't hijack the reply.
+    return cleaned[:80] if len(cleaned) >= 2 else ""
+
+
+def _last_user_turn(history: list[dict] | None) -> str:
+    for turn in reversed(history or []):
+        if isinstance(turn, dict) and turn.get("role") == "user":
+            content = str(turn.get("content") or "").strip()
+            if content:
+                return content
+    return ""
+
 
 class RuleBasedProvider(AIProvider):
     name = "rule_based"
 
-    def _classify(self, text: str) -> dict:
+    def _classify(self, text: str, history: list[dict] | None = None) -> dict:
         if _RESUME_IMPROVE.search(text):
             return {
                 "intent": "resume_improve",
@@ -161,6 +235,16 @@ class RuleBasedProvider(AIProvider):
                 "tools": ["memory"],
                 "response_mode": "answer",
             }
+        if _CONVERSATION_RECALL.search(text):
+            # Answered from the request's conversation history (real data);
+            # no tools, no memory writes.
+            return {
+                "intent": "conversation_recall",
+                "requires_memory": False,
+                "requires_tools": False,
+                "tools": [],
+                "response_mode": "answer",
+            }
         if _REMINDER_CREATE.search(text):
             return {
                 "intent": "reminder_create",
@@ -192,6 +276,14 @@ class RuleBasedProvider(AIProvider):
                 "requires_tools": True,
                 "tools": ["reminders"],
                 "response_mode": "list",
+            }
+        if _TASK_CREATE_ADD.search(text):
+            return {
+                "intent": "task_create",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["tasks"],
+                "response_mode": "confirm",
             }
         if _TASK_DELETE.search(text):
             return {
@@ -265,6 +357,26 @@ class RuleBasedProvider(AIProvider):
                 "tools": ["calculator"],
                 "response_mode": "answer",
             }
+        if (
+            _FOLLOWUP_PRONOUN.search(text)
+            or _FOLLOWUP_BARE.search(text)
+            or _FOLLOWUP_MORE.search(text)
+        ):
+            # Pronoun follow-up ("why would I use it?", "tell me more").
+            # Only a real topic from the conversation history may ground the
+            # reply; without one, fall through to greeting/help/chat_fallback
+            # below instead of inventing an answer. Checked after every tool
+            # intent so it never shadows a real command.
+            topic = _extract_topic(_last_user_turn(history))
+            if topic:
+                return {
+                    "intent": "chat_followup",
+                    "requires_memory": False,
+                    "requires_tools": False,
+                    "tools": [],
+                    "response_mode": "chat",
+                    "topic": topic,
+                }
         if _GREETING.search(text):
             return {
                 "intent": "greeting",
@@ -289,13 +401,46 @@ class RuleBasedProvider(AIProvider):
             "response_mode": "chat",
         }
 
-    async def aclassify_intent(self, text: str) -> dict:
-        return self._classify(text)
+    async def aclassify_intent(
+        self, text: str, history: list[dict] | None = None
+    ) -> dict:
+        return self._classify(text, history)
 
-    async def agenerate(self, text: str, context: str = "") -> str:
+    async def agenerate(
+        self, text: str, context: str = "", history: list[dict] | None = None
+    ) -> str:
         if context:
             return context
-        intent = self._classify(text)["intent"]
+        classification = self._classify(text, history)
+        intent = classification["intent"]
+        if intent == "conversation_recall":
+            # Real data only: topics come from the request's history, never
+            # invented. Cap at the 3 most recent user turns.
+            topics = [
+                t
+                for t in (
+                    _extract_topic(str(turn.get("content") or ""))
+                    for turn in (history or [])
+                    if isinstance(turn, dict) and turn.get("role") == "user"
+                )
+                if t
+            ][-3:]
+            if not topics:
+                return (
+                    "We haven't discussed anything yet in this conversation, sir."
+                )
+            return f"Earlier, sir, we discussed: {', then '.join(topics)}."
+        if intent == "chat_followup":
+            # The topic is guaranteed non-empty by _classify; the reply stays
+            # honest and conversational with one concrete follow-up offer.
+            topic = classification.get("topic") or _extract_topic(
+                _last_user_turn(history)
+            )
+            return (
+                f"On {topic}, sir — happy to go deeper on that. Shall I search "
+                f"your documents for what they say about {topic}, or look it "
+                "up on the web?"
+            )
         if intent == "greeting":
             return (
                 f"At your service, sir. {settings.persona_name} online "

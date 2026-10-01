@@ -27,10 +27,16 @@ def parse_reminder_at(text: str) -> datetime:
     lowered = (text or "").lower()
     now = _utcnow()
 
-    in_match = re.search(r"\bin\s+(\d+)\s+(hours?|minutes?)\b", lowered)
+    in_match = re.search(r"\bin\s+(\d+)\s+(hours?|minutes?|days?)\b", lowered)
     if in_match:
         n = int(in_match.group(1))
-        delta = timedelta(hours=n) if "hour" in in_match.group(2) else timedelta(minutes=n)
+        unit = in_match.group(2)
+        if "hour" in unit:
+            delta = timedelta(hours=n)
+        elif "day" in unit:
+            delta = timedelta(days=n)
+        else:
+            delta = timedelta(minutes=n)
         return now + delta
 
     base = now
@@ -64,15 +70,28 @@ def parse_reminder_at(text: str) -> datetime:
         return target
     if "today" in lowered:
         return base
-    if not explicit_time:
-        # Vague ("remind me to call mom") -> tomorrow 9am.
-        target = now + timedelta(days=1)
-        return target.replace(hour=9, minute=0, second=0, microsecond=0)
-    return base
+    if explicit_time:
+        # "remind me at 5pm": today if the time is still ahead, else tomorrow.
+        if base <= now:
+            base = base + timedelta(days=1)
+        return base
+    # Vague ("remind me to call mom") -> tomorrow 9am.
+    target = now + timedelta(days=1)
+    return target.replace(hour=9, minute=0, second=0, microsecond=0)
 
 
 def extract_reminder_title(text: str) -> str:
     """Pull the reminder subject out of e.g. 'remind me to call mom tomorrow'."""
+    # Relative/absolute phrasing: "remind me in 20 minutes to study",
+    # "remind me at 5pm to call mom" — the subject follows the final "to".
+    m = re.search(
+        r"remind me (?:in\s+\d+\s+(?:hours?|minutes?|days?)"
+        r"|at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+to\s+(.+)",
+        text or "",
+        re.IGNORECASE | re.DOTALL,
+    )
+    if m:
+        return m.group(1).strip().rstrip(".") or "Untitled reminder"
     m = re.search(r"remind me to\s+(.+)", text or "", re.IGNORECASE | re.DOTALL)
     body = m.group(1).strip() if m else (text or "").strip()
     body = re.sub(
@@ -85,11 +104,14 @@ def extract_reminder_title(text: str) -> str:
         r"\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s*$", "", body, flags=re.IGNORECASE
     )
     body = re.sub(
-        r"\s+in\s+\d+\s+(?:hours?|minutes?)\s*$", "", body, flags=re.IGNORECASE
+        r"\s+in\s+\d+\s+(?:hours?|minutes?|days?)\s*$", "", body, flags=re.IGNORECASE
     )
     body = re.sub(
         r"\s+this\s+(?:evening|morning|afternoon)\s*$", "", body, flags=re.IGNORECASE
     )
+    # A bare "remind me at 5pm" / "remind me in 20 minutes" carries no
+    # subject — don't leave "remind me" as the title.
+    body = re.sub(r"^remind me\s*$", "", body, flags=re.IGNORECASE)
     return body.strip().rstrip(".") or "Untitled reminder"
 
 

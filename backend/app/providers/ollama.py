@@ -38,7 +38,9 @@ class OllamaProvider(AIProvider):
                 f"Ollama is not reachable at {self.base_url}: {exc}"
             ) from exc
 
-    async def aclassify_intent(self, text: str) -> dict:
+    async def aclassify_intent(
+        self, text: str, history: list | None = None
+    ) -> dict:
         import json
 
         content = await self._chat(
@@ -60,11 +62,17 @@ class OllamaProvider(AIProvider):
         except Exception as exc:
             raise ProviderError(f"Ollama returned invalid JSON: {exc}") from exc
 
-    async def agenerate(self, text: str, context: str = "") -> str:
+    async def agenerate(
+        self, text: str, context: str = "", history: list | None = None
+    ) -> str:
         user_text = f"{context}\n\nUser: {text}" if context else text
-        return await self._chat(
-            [
-                {"role": "system", "content": _JARVIS_SYSTEM_PROMPT},
-                {"role": "user", "content": user_text},
-            ]
-        )
+        messages = [{"role": "system", "content": _JARVIS_SYSTEM_PROMPT}]
+        # Recent conversation turns so pronouns ("it", "that") resolve.
+        for turn in (history or [])[-10:]:
+            if not isinstance(turn, dict):
+                continue
+            role, content = turn.get("role"), str(turn.get("content") or "").strip()
+            if role in ("user", "assistant") and content:
+                messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": user_text})
+        return await self._chat(messages)

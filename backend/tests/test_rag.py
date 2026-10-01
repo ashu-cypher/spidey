@@ -251,7 +251,9 @@ async def test_agent_grounded_answer_with_citation():
     resp = await agent.run(
         "search my documents for the wombat knitting club", run, engine
     )
-    assert resp.startswith("Based on your uploaded documents")
+    # Task 5 (conversational enhancement): the RAG intro names the actual
+    # source document(s) instead of the generic "uploaded documents" line.
+    assert resp.startswith("Based on your `grounded_probe.txt`")
     assert "[grounded_probe.txt, chunk 0]" in resp
     assert engine.get_run(run.workflow_id).status == "completed"
 

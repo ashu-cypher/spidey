@@ -3,6 +3,7 @@ import logging
 import re
 import secrets
 import time
+from inspect import Parameter, signature
 from typing import Any, Awaitable, Callable
 
 from sqlalchemy import select
@@ -345,7 +346,50 @@ class SpideyAgent:
 
         return _step
 
-    async def run(self, message: str, run, engine) -> str:
+    @staticmethod
+    def _accepts_history(fn: Callable) -> bool:
+        """Backward compat: some providers predate the ``history`` kwarg.
+
+        Existing callers/tests (e.g. the stub provider in the test suite)
+        define ``aclassify_intent(message)`` / ``agenerate(message,
+        context="")`` — calling those with ``history=`` would TypeError and
+        fail the whole run, so we only pass it when the signature accepts it.
+        """
+        try:
+            params = signature(fn).parameters
+        except (TypeError, ValueError):
+            return False
+        if "history" in params:
+            return True
+        return any(
+            p.kind == Parameter.VAR_KEYWORD for p in params.values()
+        )
+
+    async def _aclassify(self, message: str, history: list[dict]) -> dict:
+        if self._accepts_history(self.provider.aclassify_intent):
+            return await self.provider.aclassify_intent(message, history=history)
+        return await self.provider.aclassify_intent(message)
+
+    async def _agenerate(
+        self, message: str, context: str, history: list[dict]
+    ) -> str:
+        if self._accepts_history(self.provider.agenerate):
+            return await self.provider.agenerate(
+                message, context=context, history=history
+            )
+        return await self.provider.agenerate(message, context=context)
+
+    async def run(
+        self,
+        message: str,
+        run,
+        engine,
+        history: list[dict] | None = None,
+    ) -> str:
+        # Conversation continuity: the last 10 turns travel with the message
+        # so the provider can resolve pronoun follow-ups ("why would I use
+        # it?"). The route bounds history; this is belt-and-braces.
+        history = (history or [])[-10:]
         _step = self._stepper(run, engine)
         tool_results: dict[str, dict] = {}
         classification: dict | None = None
@@ -356,7 +400,7 @@ class SpideyAgent:
             classification = await _step(
                 "Understand request",
                 "understand",
-                lambda: self.provider.aclassify_intent(message),
+                lambda: self._aclassify(message, history),
             )
             intent = classification.get("intent", "chat_fallback")
             if intent in ("resume_analyze", "resume_improve"):
@@ -482,7 +526,7 @@ class SpideyAgent:
             response = await _step(
                 "Compose response",
                 "respond",
-                lambda: self.provider.agenerate(message, context=facts),
+                lambda: self._agenerate(message, facts, history),
                 input_data={"facts": facts[:500]},
             )
 
@@ -498,12 +542,19 @@ class SpideyAgent:
             engine.finish_run(run.workflow_id, "failed", result=_FALLBACK_REPLY)
             return _FALLBACK_REPLY
 
-    async def run_confirmed(self, pending: dict, run, engine) -> str:
+    async def run_confirmed(
+        self,
+        pending: dict,
+        run,
+        engine,
+        history: list[dict] | None = None,
+    ) -> str:
         """Execute a user-confirmed pending action through the normal workflow.
 
         Shows Execute/Verify steps on a fresh run, then invalidates the token
         (already consumed by ``pop_pending``).
         """
+        history = (history or [])[-10:]
         _step = self._stepper(run, engine)
         tool_name = pending["tool"]
         args = pending["args"]
@@ -537,7 +588,7 @@ class SpideyAgent:
             response = await _step(
                 "Compose response",
                 "respond",
-                lambda: self.provider.agenerate(message, context=facts),
+                lambda: self._agenerate(message, facts, history),
                 input_data={"facts": facts[:500]},
             )
             await _step(
@@ -816,6 +867,16 @@ class SpideyAgent:
             ref = re.sub(r"\s+as\s+done\s*$", "", ref, flags=re.IGNORECASE)
             ref = ref.rstrip(".?!").strip()
             return ref or None
+        # Natural phrasing without the kind word, e.g.
+        # "mark my Python project complete" -> "Python project".
+        m = re.search(
+            r"\bmark\s+(?:my\s+)?(.+?)\s+(?:as\s+)?complete\b",
+            message,
+            re.IGNORECASE,
+        )
+        if m:
+            ref = m.group(1).strip().rstrip(".?!").strip()
+            return ref or None
         return None
 
     @staticmethod
@@ -830,8 +891,16 @@ class SpideyAgent:
         m = re.search(r"remind me to\s+(.+)", message, re.IGNORECASE)
         if m:
             return m.group(1).strip().rstrip(".")
+        # Natural phrasing: "add finish my project to my tasks".
         m = re.search(
-            r"(?:create|add)\s+(?:a\s+)?task\s*(?:for\s+tomorrow\s*)?"
+            r"\badd\s+(.+?)\s+to\s+my\s+tasks?\b",
+            message,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if m and m.group(1).strip():
+            return m.group(1).strip().rstrip(".")
+        m = re.search(
+            r"(?:create|add)\s+(?:a\s+)?task(?:\s+for\s+tomorrow)?"
             r"(?::\s*|\s+to\s+|\s+)?(.+)",
             message,
             re.IGNORECASE,
@@ -847,6 +916,18 @@ class SpideyAgent:
 
     @staticmethod
     def _extract_search_query(message: str) -> str:
+        for pattern in (
+            r"search\s+for\s+the\s+latest\s+information\s+about\s+(.+)",
+            r"\bsearch\s+(?:the\s+)?latest\s+(?:news\s+)?(?:about|on)\s+(.+)",
+        ):
+            m = re.search(pattern, message, re.IGNORECASE | re.DOTALL)
+            if m and m.group(1).strip():
+                prefix = (
+                    "latest information about "
+                    if "information" in pattern
+                    else "latest "
+                )
+                return (prefix + m.group(1).strip()).rstrip(".")
         for pattern in (
             r"search\s+the\s+web\s+for\s+(.+)",
             r"search\s+(?:the\s+)?(?:web|internet|online)\s+(?:for\s+)?(.+)",
@@ -922,7 +1003,14 @@ class SpideyAgent:
             task = tool_results.get("tasks", {}).get("task", {})
             title = task.get("title", "")
             due = task.get("due")
-            return f"Task created: {title}" + (f" (due {due})" if due else "")
+            reply = (
+                f"Task created: {title}" + (f" (due {due})" if due else "") + "."
+                " Done, sir — one less thing to worry about."
+            )
+            # Deterministic variety, one short sentence, no verbosity.
+            if len(title) % 2 == 0:
+                reply += " Anything else to add?"
+            return reply
         if intent == "task_list":
             tasks = tool_results.get("tasks", {}).get("tasks", [])
             if tasks:
@@ -934,7 +1022,7 @@ class SpideyAgent:
             return "No tasks yet — say 'create a task' to add one."
         if intent == "task_complete":
             task = tool_results.get("tasks", {}).get("task", {})
-            return f"Marked done: \"{task.get('title', '')}\"."
+            return f"Done, sir — \"{task.get('title', '')}\" marked complete."
         if intent == "task_delete":
             deleted = tool_results.get("tasks", {})
             return f"Deleted the task \"{deleted.get('title', '')}\"."
@@ -942,7 +1030,10 @@ class SpideyAgent:
             reminder = tool_results.get("reminders", {}).get("reminder", {})
             at = reminder.get("remind_at")
             text = reminder.get("text", "")
-            return f"Reminder set: {text}" + (f" (at {at})" if at else "")
+            return (
+                f"Reminder set: {text}" + (f" (at {at})" if at else "") + "."
+                " Consider it handled, sir."
+            )
         if intent == "reminder_list":
             reminders = tool_results.get("reminders", {}).get("reminders", [])
             if reminders:
@@ -975,7 +1066,7 @@ class SpideyAgent:
                 url = r.get("url", "")
                 snippet = (r.get("snippet", "") or "")[:200]
                 lines.append(f"- {title} ({url})\n  {snippet}")
-            return "Here's what the web says:\n" + "\n".join(lines)
+            return "Found it, sir. Here's what the web says:\n" + "\n".join(lines)
         if intent == "document_create":
             doc = tool_results.get("documents", {}).get("document", {})
             return (
@@ -1077,6 +1168,14 @@ class SpideyAgent:
         best = max((float(r.get("score") or 0.0) for r in results), default=0.0)
         if not results or best < RAG_CONFIDENCE_THRESHOLD:
             return LOW_CONFIDENCE_REPLY
+        # Name the actual source documents (distinct, in first-seen order) —
+        # never claim a doc source when there are none.
+        sources: list[str] = []
+        for r in results:
+            source = r.get("source") or "document"
+            if source not in sources:
+                sources.append(source)
+        named = ", ".join(f"`{s}`" for s in sources)
         lines = []
         for r in results:
             source = r.get("source") or "document"
@@ -1084,7 +1183,7 @@ class SpideyAgent:
             content = (r.get("content") or "")[:600]
             lines.append(f"[{source}, chunk {chunk_index}]\n{content}")
         return (
-            "Based on your uploaded documents:\n\n"
+            f"Based on your {named}:\n\n"
             + "\n\n".join(lines)
             + "\n\nAnswer using only these passages, citing each claim like "
             "[filename, chunk N]."
