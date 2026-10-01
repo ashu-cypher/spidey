@@ -419,13 +419,24 @@ class SpideyAgent:
                 )
 
             # Resolve all tool args up front (async: delete/complete intents
-            # resolve titles to ids via a list call).
+            # resolve titles to ids via a list call). A resolution failure
+            # (e.g. nothing matched the ref) ends the run with the tool's
+            # user-safe message instead of the generic fallback.
             tool_jobs: list[tuple[dict, str, dict]] = []
             for plan_step in plan:
                 if plan_step.get("type") != "tool":
                     continue
                 tool_name = plan_step["tool"]
-                args = await self._tool_args(tool_name, intent, message)
+                try:
+                    args = await self._tool_args(tool_name, intent, message)
+                except ToolError as exc:
+                    engine.finish_run(
+                        run.workflow_id, "failed", result=exc.user_message
+                    )
+                    return exc.user_message
+                # Cross-resolution: the ref may have matched the sibling
+                # tool's list (a reminder named like a task, or vice versa).
+                tool_name = args.pop("_resolved_tool", None) or tool_name
                 tool_jobs.append((plan_step, tool_name, args))
 
             # Confirmation gate (spec 21): "confirm"-level actions are never
@@ -784,9 +795,16 @@ class SpideyAgent:
                     "due": self._extract_due(message),
                 }
             if intent in ("task_complete", "task_delete"):
-                item = await self._resolve_item("tasks", "task", message)
+                tool_name, item = await self._resolve_item_cross(
+                    "tasks", "task", "reminders", "reminder", message
+                )
                 action = "complete" if intent == "task_complete" else "delete"
-                return {"action": action, "id": item["id"], "title": item["title"]}
+                args = {"action": action, "id": item["id"], "title": item["title"]}
+                if tool_name != "tasks":
+                    # The ref matched a reminder, not a task: tell the run
+                    # loop to execute against the reminders tool.
+                    args["_resolved_tool"] = tool_name
+                return args
             return {"action": "list"}
         if tool == "reminders":
             if intent == "reminder_create":
@@ -796,9 +814,14 @@ class SpideyAgent:
                     "remind_at": parse_reminder_at(message).isoformat(),
                 }
             if intent in ("reminder_complete", "reminder_delete"):
-                item = await self._resolve_item("reminders", "reminder", message)
+                tool_name, item = await self._resolve_item_cross(
+                    "reminders", "reminder", "tasks", "task", message
+                )
                 action = "complete" if intent == "reminder_complete" else "delete"
-                return {"action": action, "id": item["id"], "title": item["title"]}
+                args = {"action": action, "id": item["id"], "title": item["title"]}
+                if tool_name != "reminders":
+                    args["_resolved_tool"] = tool_name
+                return args
             return {"action": "list"}
         if tool == "search":
             return {"query": self._extract_search_query(message)}
@@ -853,6 +876,35 @@ class SpideyAgent:
         raise ToolError(
             f"Which {kind}? Say e.g. 'delete {kind} 1' or match its title."
         )
+
+    async def _resolve_item_cross(
+        self,
+        primary_tool: str,
+        primary_kind: str,
+        fallback_tool: str,
+        fallback_kind: str,
+        message: str,
+    ) -> tuple[str, dict]:
+        """Resolve an item ref against the primary tool, falling back to the
+        other tool when nothing matches there ("mark study complete" where
+        "study" is a reminder, not a task). Returns (tool_name, item).
+
+        Only "couldn't find" errors fall through, and only when the message
+        names neither kind ("task"/"reminder"): "delete task 99999" must
+        fail as a task lookup, never wander into the reminders list. An
+        ambiguous ref ("Which task?") also stays put. Deletes remain behind
+        the confirmation gate, so a cross-resolved delete still asks first.
+        """
+        try:
+            item = await self._resolve_item(primary_tool, primary_kind, message)
+            return primary_tool, item
+        except ToolError as exc:
+            if "couldn't find" not in exc.user_message:
+                raise exc
+            if re.search(r"\b(tasks?|reminders?)\b", message, re.IGNORECASE):
+                raise exc
+        item = await self._resolve_item(fallback_tool, fallback_kind, message)
+        return fallback_tool, item
 
     @staticmethod
     def _extract_ref(message: str, kind: str) -> str | None:
@@ -1021,11 +1073,18 @@ class SpideyAgent:
                 return f"Your tasks:\n{lines}"
             return "No tasks yet — say 'create a task' to add one."
         if intent == "task_complete":
-            task = tool_results.get("tasks", {}).get("task", {})
-            return f"Done, sir — \"{task.get('title', '')}\" marked complete."
+            # Cross-resolution may have executed against the reminders tool.
+            task = tool_results.get("tasks", {}).get("task") or tool_results.get(
+                "reminders", {}
+            ).get("reminder", {})
+            title = task.get("title") or task.get("text", "")
+            return f'Done, sir — "{title}" marked complete.'
         if intent == "task_delete":
-            deleted = tool_results.get("tasks", {})
-            return f"Deleted the task \"{deleted.get('title', '')}\"."
+            deleted = tool_results.get("tasks", {}) or tool_results.get(
+                "reminders", {}
+            )
+            title = deleted.get("title") or deleted.get("text", "")
+            return f'Deleted the task "{title}".'
         if intent == "reminder_create":
             reminder = tool_results.get("reminders", {}).get("reminder", {})
             at = reminder.get("remind_at")
@@ -1045,11 +1104,17 @@ class SpideyAgent:
                 return f"Your reminders:\n{lines}"
             return "No reminders yet — say 'remind me to ...' to add one."
         if intent == "reminder_complete":
-            reminder = tool_results.get("reminders", {}).get("reminder", {})
-            return f"Reminder done: \"{reminder.get('text', '')}\"."
+            reminder = tool_results.get("reminders", {}).get(
+                "reminder"
+            ) or tool_results.get("tasks", {}).get("task", {})
+            text = reminder.get("text") or reminder.get("title", "")
+            return f'Reminder done: "{text}".'
         if intent == "reminder_delete":
-            deleted = tool_results.get("reminders", {})
-            return f"Deleted the reminder \"{deleted.get('title', '')}\"."
+            deleted = tool_results.get("reminders", {}) or tool_results.get(
+                "tasks", {}
+            )
+            text = deleted.get("text") or deleted.get("title", "")
+            return f'Deleted the reminder "{text}".'
         if intent == "web_search":
             search = tool_results.get("search", {})
             if search.get("error"):

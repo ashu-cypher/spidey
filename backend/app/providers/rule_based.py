@@ -83,6 +83,20 @@ _CALCULATE = re.compile(
     r"\b(calculat|compute|what is|what's|\d\s*[\+\-\*\/\%\^]|\bplus\b|\bminus\b|\btimes\b|\bdivided\b)",
     re.IGNORECASE,
 )
+# Guard for the calculate intent: "what is"/"what's" alone must not route
+# plain English questions ("What is RAG?") to the calculator. The intent
+# only fires when the message also carries a digit or an explicit math word.
+_HAS_MATH = re.compile(
+    r"\d"
+    r"|\b(plus|minus|times|divided(\s+by)?|multiplied(\s+by)?|modulo|percent|"
+    r"percentage|square\s+root|power\s+of)\b",
+    re.IGNORECASE,
+)
+# "What is X?" with no math: the rule-based provider has no built-in answer,
+# so the fallback offers a real web search instead of failing or inventing.
+_DEFINITION_ASK = re.compile(
+    r"\bwhat\s+is\b|\bwhat's\b|\bwho\s+is\b|\bdefine\b", re.IGNORECASE
+)
 _GREETING = re.compile(
     r"\b(hello|hi|hey|good morning|good afternoon|good evening)\b", re.IGNORECASE
 )
@@ -349,7 +363,7 @@ class RuleBasedProvider(AIProvider):
                 "tools": ["system"],
                 "response_mode": "answer",
             }
-        if _CALCULATE.search(text):
+        if _CALCULATE.search(text) and _HAS_MATH.search(text):
             return {
                 "intent": "calculate",
                 "requires_memory": False,
@@ -415,16 +429,29 @@ class RuleBasedProvider(AIProvider):
         intent = classification["intent"]
         if intent == "conversation_recall":
             # Real data only: topics come from the request's history, never
-            # invented. Cap at the 3 most recent user turns.
+            # invented. Cap at the 3 most recent user turns. Follow-up turns
+            # ("Why would I use it?") carry no topic of their own, so they
+            # are skipped rather than listed as "I use it".
+            topics: list[str] = []
+            for turn in history or []:
+                if not (isinstance(turn, dict) and turn.get("role") == "user"):
+                    continue
+                content = str(turn.get("content") or "")
+                if (
+                    _FOLLOWUP_PRONOUN.search(content)
+                    or _FOLLOWUP_BARE.search(content)
+                    or _FOLLOWUP_MORE.search(content)
+                ):
+                    continue
+                t = _extract_topic(content)
+                if t:
+                    topics.append(t)
+            topics = topics[-3:]
             topics = [
                 t
-                for t in (
-                    _extract_topic(str(turn.get("content") or ""))
-                    for turn in (history or [])
-                    if isinstance(turn, dict) and turn.get("role") == "user"
-                )
-                if t
-            ][-3:]
+                for i, t in enumerate(topics)
+                if i == 0 or t.lower() != topics[i - 1].lower()
+            ]
             if not topics:
                 return (
                     "We haven't discussed anything yet in this conversation, sir."
@@ -456,6 +483,15 @@ class RuleBasedProvider(AIProvider):
                 "'system status', 'search the web for quantum computing', or "
                 "'explain this code: ...'."
             )
+        if _DEFINITION_ASK.search(text):
+            # Honest fallback for knowledge questions the rule-based provider
+            # cannot answer itself: name the topic and offer a real search.
+            topic = _extract_topic(text)
+            if topic:
+                return (
+                    f"I don't have that in my built-in knowledge, sir — shall "
+                    f"I search the web for '{topic}'? Just say the word."
+                )
         return (
             "Understood, sir — though I shall need something more concrete. "
             "A calculation, something to remember, or a task, perhaps?"

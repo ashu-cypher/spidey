@@ -425,3 +425,70 @@ def test_web_search_personality_prefix():
         [],
     )
     assert facts.startswith("Found it, sir.")
+
+
+# --- Smoke-fix tests: calculator gate, definition offer, recall hygiene,
+#     cross-tool resolution -----------------------------------------------
+
+
+async def test_what_is_rag_not_routed_to_calculator(setup):
+    provider, _ = setup
+    classified = await provider.aclassify_intent("What is RAG?")
+    assert classified["intent"] != "calculate"
+    reply = await provider.agenerate("What is RAG?")
+    assert "RAG" in reply
+    assert "search the web" in reply.lower()
+
+
+async def test_calculate_still_requires_math(setup):
+    provider, _ = setup
+    assert (await provider.aclassify_intent("calculate 12 * 8"))["intent"] == "calculate"
+    assert (await provider.aclassify_intent("what is 2+2"))["intent"] == "calculate"
+    assert (await provider.aclassify_intent("what is twenty plus five"))["intent"] == "calculate"
+
+
+async def test_conversation_recall_skips_followup_turns(setup):
+    provider, _ = setup
+    history = [
+        {"role": "user", "content": "What is RAG?"},
+        {"role": "assistant", "content": "RAG is Retrieval-Augmented Generation."},
+        {"role": "user", "content": "Why would I use it?"},
+        {"role": "assistant", "content": "On RAG, sir ..."},
+    ]
+    reply = await provider.agenerate("what did we discuss earlier?", history=history)
+    assert "RAG" in reply
+    assert "I use it" not in reply
+
+
+async def test_cross_resolve_complete_reminder_via_task_phrasing(setup):
+    _, agent = setup
+    # Unique title + pre-clean so leftover dev-db rows can't pollute the run.
+    for r in (await TOOL_REGISTRY["reminders"].execute(action="list"))["reminders"]:
+        if r["text"] == "qx7-study":
+            await TOOL_REGISTRY["reminders"].execute(action="delete", id=r["id"])
+    created = await TOOL_REGISTRY["reminders"].execute(
+        action="create", title="qx7-study", remind_at="2030-01-01T10:00:00"
+    )
+    try:
+        engine = WorkflowEngine()
+        run = engine.create_run("mark qx7-study complete")
+        resp = await agent.run("mark qx7-study complete", run, engine)
+        assert "Done, sir" in resp
+        assert "qx7-study" in resp
+        listed = await TOOL_REGISTRY["reminders"].execute(action="list")
+        row = next(r for r in listed["reminders"] if r["id"] == created["reminder"]["id"])
+        assert row["done"] is True
+    finally:
+        await TOOL_REGISTRY["reminders"].execute(
+            action="delete", id=created["reminder"]["id"]
+        )
+
+
+async def test_resolution_failure_surfaces_helpful_message(setup):
+    _, agent = setup
+    engine = WorkflowEngine()
+    # Explicit kind word -> no cross-tool wandering; the honest message wins.
+    run = engine.create_run("finish task zzz-no-such-thing-xyz")
+    resp = await agent.run("finish task zzz-no-such-thing-xyz", run, engine)
+    assert "couldn't find a task" in resp
+    assert resp != "Spidey couldn't complete that step."
