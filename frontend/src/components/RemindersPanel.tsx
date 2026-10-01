@@ -6,6 +6,7 @@ import {
   setReminderDone,
 } from '../api';
 import type { ReminderItem } from '../api';
+import { HudButton, HudEmpty, HudError, HudInput, HudPanel } from './hud';
 
 export function RemindersPanel() {
   const [reminders, setReminders] = useState<ReminderItem[]>([]);
@@ -71,61 +72,56 @@ export function RemindersPanel() {
 
   return (
     <div className="space-y-4">
-      <form onSubmit={add} className="flex flex-wrap gap-2">
-        <input
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          placeholder="Remind me to…"
-          className="flex-1 min-w-[180px] rounded-lg bg-void border border-white/10 px-4 py-2 text-sm text-gray-100 placeholder-gray-600 outline-none focus:border-accent/60"
-        />
-        <input
-          type="datetime-local"
-          value={when}
-          onChange={(e) => setWhen(e.target.value)}
-          title="Remind at"
-          className="rounded-lg bg-void border border-white/10 px-3 py-2 text-sm text-gray-300 outline-none focus:border-accent/60"
-        />
-        <button
-          type="submit"
-          disabled={!title.trim()}
-          className="rounded-lg bg-accent/20 border border-accent/40 px-4 py-2 text-sm font-medium text-accent hover:bg-accent/30 disabled:opacity-40"
-        >
-          Set
-        </button>
-      </form>
+      <HudPanel title="Schedule reminder">
+        <form onSubmit={add} className="flex flex-wrap gap-2">
+          <HudInput
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Remind me to…"
+            className="min-w-[180px] flex-1"
+          />
+          <HudInput
+            type="datetime-local"
+            value={when}
+            onChange={(e) => setWhen(e.target.value)}
+            title="Remind at"
+          />
+          <HudButton type="submit" variant="primary" disabled={!title.trim()}>
+            Arm
+          </HudButton>
+        </form>
+      </HudPanel>
 
-      {error && <p className="text-sm text-red-400">{error}</p>}
+      {error && <HudError message={error} />}
 
       {reminders.length === 0 ? (
-        <p className="text-sm text-gray-500">
-          No reminders yet — try “remind me to call mom tomorrow”.
-        </p>
+        <HudEmpty>No reminders yet — try “remind me to call mom tomorrow”.</HudEmpty>
       ) : (
         <ul className="space-y-2">
           {reminders.map((r) => (
             <li
               key={r.id}
-              className="flex items-center gap-3 rounded-xl bg-panel border border-white/10 px-4 py-3"
+              className="hud-panel flex items-center gap-3 !p-3 px-4"
             >
               <button
                 type="button"
                 onClick={() => void toggle(r)}
                 title={r.done ? 'Reopen' : 'Mark done'}
                 className={`font-mono text-base ${
-                  r.done ? 'text-green-400' : 'text-gray-600 hover:text-accent'
+                  r.done ? 'text-emerald-400' : 'text-cyan-200/30 hover:text-accent'
                 }`}
               >
                 {r.done ? '✓' : '○'}
               </button>
               <span
                 className={`flex-1 text-sm ${
-                  r.done ? 'text-gray-500 line-through' : 'text-gray-200'
+                  r.done ? 'text-cyan-200/30 line-through' : 'text-cyan-100/90'
                 }`}
               >
                 {r.title}
               </span>
               {r.remind_at && (
-                <span className="font-mono text-[11px] text-gray-500">
+                <span className="font-mono text-[11px] text-cyan-200/40">
                   {new Date(r.remind_at).toLocaleString()}
                 </span>
               )}
@@ -133,7 +129,7 @@ export function RemindersPanel() {
                 type="button"
                 onClick={() => void remove(r.id)}
                 title="Delete reminder"
-                className="text-gray-600 hover:text-red-400 text-sm px-1"
+                className="px-1 text-sm text-cyan-200/30 hover:text-red-300"
               >
                 ✕
               </button>

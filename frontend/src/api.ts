@@ -436,3 +436,63 @@ export async function compareResumeVersions(
 export function resumeDownloadUrl(id: string, format: 'txt' | 'md'): string {
   return `/api/resume/versions/${encodeURIComponent(id)}/download?format=${format}`;
 }
+
+// --- System telemetry (J.A.R.V.I.S. mission) ---------------------------------
+
+export interface SystemMetrics {
+  cpu_percent: number;
+  ram: { percent: number; used_gb: number; total_gb: number };
+  disk: { percent: number };
+  uptime_seconds: number;
+  battery: { percent: number; plugged: boolean } | null;
+  host: string;
+}
+
+export async function getSystemMetrics(): Promise<SystemMetrics> {
+  const res = await fetch('/api/system/metrics');
+  return json<SystemMetrics>(res);
+}
+
+// --- Security protocols (J.A.R.V.I.S. mission) --------------------------------
+
+export interface ProtocolDef {
+  id: string;
+  name: string;
+  description: string;
+  sfx: string;
+}
+
+export interface ProtocolTriggerResult {
+  id: string;
+  name: string;
+  response_text: string;
+  sfx: string;
+  audit_id: string;
+}
+
+export interface ProtocolAuditEntry {
+  id: string;
+  protocol_id: string;
+  protocol_name: string;
+  response_text: string;
+  triggered_at: string;
+}
+
+export async function getProtocols(): Promise<ProtocolDef[]> {
+  const res = await fetch('/api/protocols');
+  return json<ProtocolDef[]>(res);
+}
+
+export async function triggerProtocol(id: string): Promise<ProtocolTriggerResult> {
+  const res = await fetch('/api/protocols/trigger', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id }),
+  });
+  return json<ProtocolTriggerResult>(res);
+}
+
+export async function getProtocolAudit(): Promise<ProtocolAuditEntry[]> {
+  const res = await fetch('/api/protocols/audit');
+  return json<ProtocolAuditEntry[]>(res);
+}

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { createTask, deleteTask, getTasks, setTaskDone } from '../api';
 import type { TaskItem } from '../api';
+import { HudButton, HudEmpty, HudError, HudInput, HudPanel } from './hud';
 
 export function TasksPanel() {
   const [tasks, setTasks] = useState<TaskItem[]>([]);
@@ -66,61 +67,56 @@ export function TasksPanel() {
 
   return (
     <div className="space-y-4">
-      <form onSubmit={add} className="flex flex-wrap gap-2">
-        <input
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          placeholder="New task…"
-          className="flex-1 min-w-[180px] rounded-lg bg-void border border-white/10 px-4 py-2 text-sm text-gray-100 placeholder-gray-600 outline-none focus:border-accent/60"
-        />
-        <input
-          type="date"
-          value={due}
-          onChange={(e) => setDue(e.target.value)}
-          title="Due date"
-          className="rounded-lg bg-void border border-white/10 px-3 py-2 text-sm text-gray-300 outline-none focus:border-accent/60"
-        />
-        <button
-          type="submit"
-          disabled={!title.trim()}
-          className="rounded-lg bg-accent/20 border border-accent/40 px-4 py-2 text-sm font-medium text-accent hover:bg-accent/30 disabled:opacity-40"
-        >
-          Add
-        </button>
-      </form>
+      <HudPanel title="New objective">
+        <form onSubmit={add} className="flex flex-wrap gap-2">
+          <HudInput
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="New task…"
+            className="min-w-[180px] flex-1"
+          />
+          <HudInput
+            type="date"
+            value={due}
+            onChange={(e) => setDue(e.target.value)}
+            title="Due date"
+          />
+          <HudButton type="submit" variant="primary" disabled={!title.trim()}>
+            Deploy
+          </HudButton>
+        </form>
+      </HudPanel>
 
-      {error && <p className="text-sm text-red-400">{error}</p>}
+      {error && <HudError message={error} />}
 
       {tasks.length === 0 ? (
-        <p className="text-sm text-gray-500">
-          No tasks yet — ask Spidey to track something for you.
-        </p>
+        <HudEmpty>No tasks yet — ask Spidey to track something for you.</HudEmpty>
       ) : (
         <ul className="space-y-2">
           {tasks.map((t) => (
             <li
               key={t.id}
-              className="flex items-center gap-3 rounded-xl bg-panel border border-white/10 px-4 py-3"
+              className="hud-panel flex items-center gap-3 !p-3 px-4"
             >
               <button
                 type="button"
                 onClick={() => void toggle(t)}
                 title={t.done ? 'Reopen' : 'Mark done'}
                 className={`font-mono text-base ${
-                  t.done ? 'text-green-400' : 'text-gray-600 hover:text-accent'
+                  t.done ? 'text-emerald-400' : 'text-cyan-200/30 hover:text-accent'
                 }`}
               >
                 {t.done ? '✓' : '○'}
               </button>
               <span
                 className={`flex-1 text-sm ${
-                  t.done ? 'text-gray-500 line-through' : 'text-gray-200'
+                  t.done ? 'text-cyan-200/30 line-through' : 'text-cyan-100/90'
                 }`}
               >
                 {t.title}
               </span>
               {t.due && (
-                <span className="font-mono text-[11px] text-gray-500">
+                <span className="font-mono text-[11px] text-cyan-200/40">
                   {new Date(t.due).toLocaleDateString()}
                 </span>
               )}
@@ -128,7 +124,7 @@ export function TasksPanel() {
                 type="button"
                 onClick={() => void remove(t.id)}
                 title="Delete task"
-                className="text-gray-600 hover:text-red-400 text-sm px-1"
+                className="px-1 text-sm text-cyan-200/30 hover:text-red-300"
               >
                 ✕
               </button>

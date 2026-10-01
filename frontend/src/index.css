@@ -2,25 +2,409 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ------------------------------------------------------------------ */
+/* J.A.R.V.I.S. — Stark HUD holographic command center theme           */
+/* System font stack only (offline-safe). HUD feel via tracking + case. */
+/* ------------------------------------------------------------------ */
+
+:root {
+  --hud-cyan: #00f0ff;
+  --hud-gold: #f59e0b;
+  --hud-crimson: #ef4444;
+  --hud-carbon: #030712;
+  --hud-carbon-2: #050b14;
+}
+
+html,
 body {
-  background: #05070f;
-  color: #e5e7eb;
-  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  background: var(--hud-carbon);
+  color: #d7f9ff;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
 .font-mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas,
+    'Liberation Mono', monospace;
+}
+
+/* Global scanline overlay — pointer-events: none, sits above everything */
+.hud-scanlines {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.022) 0px,
+    rgba(255, 255, 255, 0.022) 1px,
+    transparent 1px,
+    transparent 4px
+  );
+  mix-blend-mode: overlay;
+}
+
+.hud-vignette {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 89;
+  background: radial-gradient(
+    ellipse at center,
+    transparent 55%,
+    rgba(0, 0, 0, 0.55) 100%
+  );
+}
+
+/* ------------------------- HUD building blocks ------------------------- */
+
+.hud-panel {
+  position: relative;
+  border: 1px solid rgba(0, 240, 255, 0.16);
+  border-radius: 10px;
+  background: linear-gradient(
+    155deg,
+    rgba(0, 240, 255, 0.07) 0%,
+    rgba(0, 240, 255, 0.02) 35%,
+    rgba(5, 11, 20, 0.6) 100%
+  );
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow:
+    0 0 28px rgba(0, 240, 255, 0.05),
+    inset 0 0 32px rgba(0, 240, 255, 0.03);
+}
+
+/* Angled corner accents on panels */
+.hud-panel::before,
+.hud-panel::after {
+  content: '';
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  pointer-events: none;
+}
+.hud-panel::before {
+  top: -1px;
+  left: -1px;
+  border-top: 2px solid rgba(0, 240, 255, 0.7);
+  border-left: 2px solid rgba(0, 240, 255, 0.7);
+  border-top-left-radius: 10px;
+}
+.hud-panel::after {
+  bottom: -1px;
+  right: -1px;
+  border-bottom: 2px solid rgba(0, 240, 255, 0.7);
+  border-right: 2px solid rgba(0, 240, 255, 0.7);
+  border-bottom-right-radius: 10px;
+}
+
+.hud-title {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: var(--hud-cyan);
+  text-shadow: 0 0 14px rgba(0, 240, 255, 0.55);
+}
+
+.hud-subtitle {
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(103, 232, 249, 0.6);
+}
+
+/* Corner-cut HUD button */
+.hud-btn {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #a5f3fc;
+  background: rgba(0, 240, 255, 0.06);
+  border: 1px solid rgba(0, 240, 255, 0.35);
+  clip-path: polygon(
+    10px 0,
+    100% 0,
+    100% calc(100% - 10px),
+    calc(100% - 10px) 100%,
+    0 100%,
+    0 10px
+  );
+  padding: 0.6rem 1.1rem;
+  transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease,
+    border-color 0.15s ease;
+  cursor: pointer;
+  user-select: none;
+}
+.hud-btn:hover:not(:disabled) {
+  background: rgba(0, 240, 255, 0.16);
+  color: #ecfeff;
+  border-color: rgba(0, 240, 255, 0.7);
+  box-shadow: 0 0 18px rgba(0, 240, 255, 0.25);
+}
+.hud-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.hud-btn-primary {
+  background: rgba(0, 240, 255, 0.22);
+  color: #03161a;
+  font-weight: 700;
+  border-color: rgba(0, 240, 255, 0.8);
+}
+.hud-btn-primary:hover:not(:disabled) {
+  background: rgba(0, 240, 255, 0.38);
+  color: #000;
+}
+
+.hud-btn-gold {
+  background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.5);
+  color: #fde68a;
+}
+.hud-btn-gold:hover:not(:disabled) {
+  background: rgba(245, 158, 11, 0.24);
+  border-color: rgba(245, 158, 11, 0.8);
+  box-shadow: 0 0 18px rgba(245, 158, 11, 0.3);
+  color: #fffbeb;
+}
+
+.hud-btn-danger {
+  background: rgba(239, 68, 68, 0.08);
+  border-color: rgba(239, 68, 68, 0.5);
+  color: #fecaca;
+}
+.hud-btn-danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.22);
+  border-color: rgba(239, 68, 68, 0.85);
+  box-shadow: 0 0 18px rgba(239, 68, 68, 0.3);
+}
+
+.hud-input {
+  background: rgba(3, 7, 18, 0.75);
+  border: 1px solid rgba(0, 240, 255, 0.25);
+  border-radius: 6px;
+  color: #d7f9ff;
+  padding: 0.55rem 0.9rem;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.hud-input::placeholder {
+  color: rgba(103, 232, 249, 0.35);
+  letter-spacing: 0.06em;
+}
+.hud-input:focus {
+  border-color: rgba(0, 240, 255, 0.75);
+  box-shadow: 0 0 14px rgba(0, 240, 255, 0.18), inset 0 0 12px rgba(0, 240, 255, 0.05);
+}
+
+select.hud-input option {
+  background: #050b14;
+  color: #d7f9ff;
+}
+
+.hud-chip {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: #a5f3fc;
+  background: rgba(0, 240, 255, 0.05);
+  border: 1px solid rgba(0, 240, 255, 0.28);
+  border-radius: 9999px;
+  padding: 0.35rem 0.85rem;
+  transition: background-color 0.15s ease, box-shadow 0.15s ease, color 0.15s ease;
+  cursor: pointer;
+}
+.hud-chip:hover:not(:disabled) {
+  background: rgba(0, 240, 255, 0.16);
+  color: #ecfeff;
+  box-shadow: 0 0 12px rgba(0, 240, 255, 0.3);
+}
+.hud-chip:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.hud-pill {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  border-radius: 9999px;
+  border: 1px solid;
+  padding: 0.25rem 0.75rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  white-space: nowrap;
+}
+.hud-pill-on {
+  color: #a7f3d0;
+  border-color: rgba(52, 211, 153, 0.5);
+  background: rgba(52, 211, 153, 0.08);
+  box-shadow: 0 0 12px rgba(52, 211, 153, 0.2);
+}
+.hud-pill-off {
+  color: #94a3b8;
+  border-color: rgba(148, 163, 184, 0.35);
+  background: rgba(148, 163, 184, 0.06);
+}
+.hud-pill-alert {
+  color: #fecaca;
+  border-color: rgba(239, 68, 68, 0.6);
+  background: rgba(239, 68, 68, 0.1);
+  box-shadow: 0 0 12px rgba(239, 68, 68, 0.25);
+}
+
+/* Gauge bar */
+.hud-meter {
+  height: 6px;
+  border-radius: 9999px;
+  background: rgba(0, 240, 255, 0.08);
+  border: 1px solid rgba(0, 240, 255, 0.15);
+  overflow: hidden;
+}
+.hud-meter > div {
+  height: 100%;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, rgba(0, 240, 255, 0.5), #00f0ff);
+  box-shadow: 0 0 10px rgba(0, 240, 255, 0.6);
+  transition: width 0.5s ease;
 }
 
 /* Text glow for headings */
 .glow {
-  text-shadow: 0 0 18px rgba(34, 211, 238, 0.45);
+  text-shadow: 0 0 18px rgba(0, 240, 255, 0.5);
+}
+.glow-gold {
+  text-shadow: 0 0 18px rgba(245, 158, 11, 0.5);
+}
+
+/* Range sliders — HUD styled */
+input[type='range'].hud-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 9999px;
+  background: rgba(0, 240, 255, 0.18);
+  outline: none;
+}
+input[type='range'].hud-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #00f0ff;
+  border: 2px solid #03161a;
+  box-shadow: 0 0 12px rgba(0, 240, 255, 0.8);
+  cursor: pointer;
+}
+input[type='range'].hud-range::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #00f0ff;
+  border: 2px solid #03161a;
+  box-shadow: 0 0 12px rgba(0, 240, 255, 0.8);
+  cursor: pointer;
+}
+
+/* Toggle switch */
+.hud-toggle {
+  position: relative;
+  width: 44px;
+  height: 22px;
+  border-radius: 9999px;
+  border: 1px solid rgba(0, 240, 255, 0.4);
+  background: rgba(0, 240, 255, 0.06);
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+  flex-shrink: 0;
+}
+.hud-toggle[data-on='true'] {
+  background: rgba(0, 240, 255, 0.28);
+  box-shadow: 0 0 12px rgba(0, 240, 255, 0.35);
+}
+.hud-toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #67e8f9;
+  box-shadow: 0 0 8px rgba(0, 240, 255, 0.7);
+  transition: transform 0.2s ease;
+}
+.hud-toggle[data-on='true']::after {
+  transform: translateX(22px);
+}
+
+/* ------------------------- Keyframes (transform/opacity only) ------------------------- */
+
+@keyframes hud-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+.hud-blink {
+  animation: hud-blink 1.1s ease-in-out infinite;
+}
+
+@keyframes hud-sweep {
+  0% {
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+  }
+  85% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(100vh);
+    opacity: 0;
+  }
+}
+.hud-sweep-line {
+  animation: hud-sweep 9s linear infinite;
+}
+
+@keyframes hud-spin-slow {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes hud-flicker {
+  0%, 100% { opacity: 1; }
+  92% { opacity: 1; }
+  93% { opacity: 0.6; }
+  94% { opacity: 1; }
+  97% { opacity: 0.85; }
+  98% { opacity: 1; }
+}
+.hud-flicker {
+  animation: hud-flicker 6s linear infinite;
 }
 
 /* Slim dark scrollbars */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #1e293b transparent;
+  scrollbar-color: rgba(0, 240, 255, 0.25) transparent;
 }
 *::-webkit-scrollbar {
   width: 8px;
@@ -30,9 +414,9 @@ body {
   background: transparent;
 }
 *::-webkit-scrollbar-thumb {
-  background: #1e293b;
+  background: rgba(0, 240, 255, 0.22);
   border-radius: 9999px;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: #334155;
+  background: rgba(0, 240, 255, 0.4);
 }

@@ -2,12 +2,13 @@ import { useEffect, useState } from 'react';
 import { getActivity } from '../api';
 import type { RunStatus, WorkflowRun } from '../api';
 import { WorkflowPanel } from './WorkflowPanel';
+import { HudEmpty, HudError, HudPanel } from './hud';
 
 const STATUS_BADGE: Record<RunStatus, string> = {
-  running: 'bg-amber-400/10 text-amber-300 border-amber-400/30',
-  completed: 'bg-green-400/10 text-green-300 border-green-400/30',
-  failed: 'bg-red-400/10 text-red-300 border-red-400/30',
-  awaiting_confirmation: 'bg-amber-400/10 text-amber-300 border-amber-400/30',
+  running: 'border-gold/40 bg-gold/10 text-gold',
+  completed: 'border-emerald-400/40 bg-emerald-400/10 text-emerald-300',
+  failed: 'border-crimson/40 bg-crimson/10 text-red-300',
+  awaiting_confirmation: 'border-gold/40 bg-gold/10 text-gold',
 };
 
 interface Props {
@@ -36,44 +37,60 @@ export function ActivityPanel({ refreshKey }: Props) {
     };
   }, [refreshKey]);
 
-  if (error) return <p className="text-sm text-red-400">{error}</p>;
+  if (error) return <HudError message={error} />;
   if (runs.length === 0)
-    return <p className="text-sm text-gray-500">No activity yet — send Spidey a message first.</p>;
+    return <HudEmpty>No activity yet — send Spidey a message first.</HudEmpty>;
 
   return (
-    <ul className="space-y-3">
-      {runs.map((run) => {
-        const open = openId === run.workflow_id;
-        return (
-          <li key={run.workflow_id} className="rounded-xl bg-panel border border-white/10 p-4">
-            <button
-              type="button"
-              onClick={() => setOpenId(open ? null : run.workflow_id)}
-              className="flex w-full items-center gap-3 text-left"
-            >
+    <div className="relative">
+      {/* HUD timeline rail */}
+      <div className="absolute bottom-2 left-[7px] top-2 w-px bg-gradient-to-b from-accent/40 via-accent/10 to-transparent" aria-hidden="true" />
+      <ul className="space-y-3">
+        {runs.map((run) => {
+          const open = openId === run.workflow_id;
+          return (
+            <li key={run.workflow_id} className="relative pl-6">
               <span
-                className={`font-mono text-[11px] uppercase rounded-full border px-2 py-0.5 ${STATUS_BADGE[run.status]}`}
-              >
-                {run.status}
-              </span>
-              <span className="flex-1 truncate text-sm text-gray-200">{run.request}</span>
-              <span className="font-mono text-[11px] text-gray-500">
-                {new Date(run.started_at).toLocaleString()}
-              </span>
-            </button>
-            {open && (
-              <div className="mt-3 space-y-3">
-                {run.result && (
-                  <p className="whitespace-pre-wrap rounded-lg bg-white/5 border border-white/10 p-3 text-sm text-gray-200">
-                    {run.result}
-                  </p>
+                className={`absolute left-[3px] top-5 h-2.5 w-2.5 rounded-full border ${
+                  run.status === 'completed'
+                    ? 'border-emerald-400 bg-emerald-400/40 shadow-[0_0_8px_rgba(52,211,153,0.8)]'
+                    : run.status === 'failed'
+                      ? 'border-crimson bg-crimson/40 shadow-[0_0_8px_rgba(239,68,68,0.8)]'
+                      : 'border-gold bg-gold/40 shadow-[0_0_8px_rgba(245,158,11,0.8)] hud-blink'
+                }`}
+                aria-hidden="true"
+              />
+              <HudPanel className="!p-3">
+                <button
+                  type="button"
+                  onClick={() => setOpenId(open ? null : run.workflow_id)}
+                  className="flex w-full items-center gap-3 text-left"
+                >
+                  <span
+                    className={`rounded-full border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.15em] ${STATUS_BADGE[run.status]}`}
+                  >
+                    {run.status.replace(/_/g, ' ')}
+                  </span>
+                  <span className="flex-1 truncate text-sm text-cyan-100/90">{run.request}</span>
+                  <span className="font-mono text-[11px] text-cyan-200/40">
+                    {new Date(run.started_at).toLocaleString()}
+                  </span>
+                </button>
+                {open && (
+                  <div className="mt-3 space-y-3">
+                    {run.result && (
+                      <p className="whitespace-pre-wrap rounded-lg border border-accent/10 bg-carbon/60 p-3 text-sm text-cyan-100/85">
+                        {run.result}
+                      </p>
+                    )}
+                    <WorkflowPanel steps={run.steps} title="Run detail" />
+                  </div>
                 )}
-                <WorkflowPanel steps={run.steps} title="RUN DETAIL" />
-              </div>
-            )}
-          </li>
-        );
-      })}
-    </ul>
+              </HudPanel>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
