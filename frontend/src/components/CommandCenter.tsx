@@ -1,17 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArcReactor } from './ArcReactor';
 import { ChatPanel } from './ChatPanel';
+import { StatusPanel } from './StatusPanel';
 import { Gauge, HudChip, HudEmpty, HudPanel } from './hud';
 import { useJarvis } from '../jarvis/context';
+import type { VoiceState } from '../voice/jarvisVoice';
 import { getHealth, getSystemMetrics } from '../api';
 import type { SystemMetrics } from '../api';
-
-const QUICK_CHIPS = [
-  'System status',
-  'What am I working on?',
-  'Search my documents for…',
-  'Remind me in 10 minutes to…',
-];
+import { friendlyStepLabel } from '../jarvis/steps';
 
 function formatUptime(totalSeconds: number): string {
   const s = Math.max(0, Math.floor(totalSeconds));
@@ -24,41 +20,182 @@ function formatUptime(totalSeconds: number): string {
   return `${s}s`;
 }
 
-function MicButton({ onClick, listening, supported }: { onClick: () => void; listening: boolean; supported: boolean }) {
+interface MicVisual {
+  icon: string;
+  label: string;
+  title: string;
+  pulse: boolean;
+  danger: boolean;
+}
+
+function micVisual(state: VoiceState): MicVisual {
+  switch (state) {
+    case 'speaking':
+      return {
+        icon: '⏹',
+        label: 'Stop',
+        title: 'Stop J.A.R.V.I.S. speaking',
+        pulse: false,
+        danger: true,
+      };
+    case 'listening':
+      return {
+        icon: '🎤',
+        label: 'Listening…',
+        title: 'Listening — tap to stop',
+        pulse: true,
+        danger: false,
+      };
+    case 'recognizing':
+      return {
+        icon: '👂',
+        label: 'Heard you…',
+        title: 'Transcribing — tap to stop',
+        pulse: true,
+        danger: false,
+      };
+    case 'thinking':
+      return {
+        icon: '🧠',
+        label: 'Thinking…',
+        title: 'Working on your request — tap to stop listening',
+        pulse: true,
+        danger: false,
+      };
+    case 'error':
+      return {
+        icon: '🔁',
+        label: 'Retry',
+        title: 'Voice error — tap to try again',
+        pulse: false,
+        danger: true,
+      };
+    default:
+      return {
+        icon: '🎤',
+        label: 'Talk',
+        title: 'Activate voice interface',
+        pulse: false,
+        danger: false,
+      };
+  }
+}
+
+function MicButton() {
+  const {
+    voiceState,
+    voiceSupported,
+    toggleListening,
+    retryVoice,
+    stopSpeaking,
+  } = useJarvis();
+
+  const onClick = () => {
+    if (voiceState === 'speaking') {
+      stopSpeaking();
+    } else if (voiceState === 'error') {
+      retryVoice();
+    } else {
+      toggleListening();
+    }
+  };
+
+  const v = micVisual(voiceState);
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={!supported}
-      title={supported ? (listening ? 'Stop listening' : 'Activate voice interface') : 'Voice not supported in this browser'}
-      className={`relative mx-auto flex h-24 w-24 items-center justify-center rounded-full border-2 transition-all disabled:opacity-30 ${
-        listening
-          ? 'border-crimson/80 bg-crimson/10 shadow-[0_0_36px_rgba(239,68,68,0.45)]'
-          : 'border-accent/60 bg-accent/5 shadow-[0_0_28px_rgba(0,240,255,0.3)] hover:bg-accent/15'
-      }`}
-    >
-      {listening && (
-        <span className="absolute inset-0 rounded-full border border-crimson/50 hud-blink" />
-      )}
-      <span className="text-3xl" aria-hidden="true">{listening ? '⏺' : '🎤'}</span>
-    </button>
+    <div className="flex flex-col items-center">
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={!voiceSupported}
+        title={
+          voiceSupported
+            ? v.title
+            : 'Voice not supported in this browser — type instead'
+        }
+        aria-label={voiceSupported ? v.title : 'Voice unavailable'}
+        className={`relative mx-auto flex h-24 w-24 items-center justify-center rounded-full border-2 transition-all disabled:opacity-30 ${
+          v.danger
+            ? 'border-crimson/80 bg-crimson/10 shadow-[0_0_36px_rgba(239,68,68,0.45)]'
+            : voiceState === 'idle'
+              ? 'border-accent/60 bg-accent/5 shadow-[0_0_28px_rgba(0,240,255,0.3)] hover:bg-accent/15'
+              : 'border-accent/80 bg-accent/10 shadow-[0_0_36px_rgba(0,240,255,0.45)]'
+        }`}
+      >
+        {v.pulse && (
+          <span className="absolute inset-0 rounded-full border border-accent/50 hud-blink" />
+        )}
+        <span className="text-3xl" aria-hidden="true">
+          {v.icon}
+        </span>
+      </button>
+      <span
+        className={`mt-2 font-mono text-[10px] uppercase tracking-[0.25em] ${
+          v.danger ? 'text-red-300' : 'text-cyan-200/60'
+        } ${v.pulse ? 'hud-blink' : ''}`}
+      >
+        {voiceSupported ? v.label : 'Unavailable'}
+      </span>
+    </div>
   );
 }
 
 function WakePill() {
-  const { voiceSupported, listening, wakeMode } = useJarvis();
+  const { voiceSupported, voiceState, wakeMode } = useJarvis();
   if (!voiceSupported)
     return <span className="hud-pill hud-pill-off">Voice unsupported</span>;
-  if (listening)
+  if (voiceState === 'listening' || voiceState === 'recognizing')
     return (
       <span className="hud-pill hud-pill-on">
         <span className="inline-block h-2 w-2 rounded-full bg-emerald-400 hud-blink" />
         Listening
       </span>
     );
+  if (voiceState === 'speaking')
+    return <span className="hud-pill hud-pill-on">Speaking</span>;
+  if (voiceState === 'thinking')
+    return <span className="hud-pill hud-pill-on">Thinking</span>;
   if (wakeMode === 'awake')
     return <span className="hud-pill hud-pill-on">Awake — 60s window</span>;
   return <span className="hud-pill hud-pill-off">Standby — say “Jarvis”</span>;
+}
+
+/** Real thinking state: the RUNNING step's friendly label, or "Waking up…". */
+function ThinkingLine() {
+  const { chatBusy, activeSteps } = useJarvis();
+  if (!chatBusy) return null;
+  const running = activeSteps.find((s) => s.status === 'RUNNING');
+  const label = running ? friendlyStepLabel(running) : 'Waking up…';
+  return (
+    <p
+      className="mt-2 font-mono text-[11px] uppercase tracking-[0.25em] text-gold hud-blink"
+      aria-live="polite"
+    >
+      {label}
+    </p>
+  );
+}
+
+/** Voice recognition failure card with recovery actions. */
+function VoiceErrorCard() {
+  const { voiceError, retryVoice, focusChatInput, chatBusy } = useJarvis();
+  if (!voiceError) return null;
+  return (
+    <div className="mt-3 w-full rounded-lg border border-crimson/40 bg-crimson/10 px-4 py-3">
+      <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-red-300">
+        I couldn&apos;t hear that clearly.
+      </p>
+      <p className="mt-1 text-xs text-cyan-100/60">{voiceError}</p>
+      <div className="mt-2 flex gap-2">
+        <HudChip onClick={retryVoice} disabled={chatBusy} title="Try listening again">
+          Try again
+        </HudChip>
+        <HudChip onClick={focusChatInput} title="Type your message instead">
+          Type instead
+        </HudChip>
+      </div>
+    </div>
+  );
 }
 
 export function CommandCenter() {
@@ -67,11 +204,7 @@ export function CommandCenter() {
     spectrumRef,
     transcript,
     clearTranscript,
-    sendChat,
-    toggleListening,
-    listening,
     voiceSupported,
-    chatBusy,
   } = useJarvis();
 
   const [metrics, setMetrics] = useState<SystemMetrics | null>(null);
@@ -117,7 +250,7 @@ export function CommandCenter() {
             <ArcReactor mode={reactorMode} spectrum={spectrumRef} size={280} />
           </div>
           <div className="mt-2">
-            <MicButton onClick={toggleListening} listening={listening} supported={voiceSupported} />
+            <MicButton />
           </div>
           <p className="mt-3 font-mono text-[11px] uppercase tracking-[0.25em] text-cyan-200/50">
             Voice interface
@@ -125,15 +258,16 @@ export function CommandCenter() {
           <div className="mt-2">
             <WakePill />
           </div>
-          <div className="mt-5 w-full border-t border-accent/10 pt-4">
-            <p className="hud-subtitle mb-2">Tactical prompts</p>
-            <div className="flex flex-wrap gap-2">
-              {QUICK_CHIPS.map((chip) => (
-                <HudChip key={chip} onClick={() => sendChat(chip)} disabled={chatBusy}>
-                  {chip}
-                </HudChip>
-              ))}
-            </div>
+          <ThinkingLine />
+          <VoiceErrorCard />
+          {!voiceSupported && (
+            <p className="mt-3 max-w-[260px] text-center text-xs text-cyan-200/40">
+              Voice isn&apos;t available in this browser — everything works by
+              typing.
+            </p>
+          )}
+          <div className="mt-4 w-full border-t border-accent/10 pt-4">
+            <StatusPanel />
           </div>
         </HudPanel>
 

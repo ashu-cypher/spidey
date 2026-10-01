@@ -61,16 +61,52 @@ async function json<T>(res: Response): Promise<T> {
   return (await res.json()) as T;
 }
 
+export interface ChatHistoryTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 export async function postChat(
   message: string,
   confirmToken?: string,
+  history?: ChatHistoryTurn[],
 ): Promise<{ run_id: string }> {
   const res = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, confirm_token: confirmToken ?? null }),
+    body: JSON.stringify({
+      message,
+      confirm_token: confirmToken ?? null,
+      history: history ?? [],
+    }),
   });
   return json(res);
+}
+
+// --- Proactive briefing (optional; backend may not implement it) ------------
+
+export interface Briefing {
+  pending_tasks: number;
+  due_soon: { text: string; remind_at: string | null }[];
+}
+
+/**
+ * Fetch the proactive briefing. Returns null on ANY failure (404, network,
+ * malformed) so callers can skip silently.
+ */
+export async function getBriefing(): Promise<Briefing | null> {
+  try {
+    const res = await fetch('/api/briefing');
+    if (!res.ok) return null;
+    const data = (await res.json()) as Partial<Briefing>;
+    return {
+      pending_tasks:
+        typeof data.pending_tasks === 'number' ? data.pending_tasks : 0,
+      due_soon: Array.isArray(data.due_soon) ? data.due_soon : [],
+    };
+  } catch {
+    return null;
+  }
 }
 
 export async function getWorkflow(run_id: string): Promise<WorkflowRun> {

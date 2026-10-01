@@ -60,12 +60,31 @@ function recognitionCtor(): RecognitionCtor | null {
 export type WakeMode = 'awake' | 'sleeping';
 export type WakeSensitivity = 'lenient' | 'strict';
 
+/**
+ * Explicit voice-engine state:
+ * - idle: recognition off.
+ * - listening: mic open, waiting for speech.
+ * - recognizing: speech detected (interim or final), being transcribed.
+ * - thinking: a voice-originated message is in flight (set by the UI layer).
+ * - speaking: TTS is actively talking.
+ * - error: a fatal recognition failure (see getVoiceError()).
+ */
+export type VoiceState =
+  | 'idle'
+  | 'listening'
+  | 'recognizing'
+  | 'thinking'
+  | 'speaking'
+  | 'error';
+
 export interface JarvisVoiceCallbacks {
   /** Final + interim transcripts. In 'sleeping' mode, only post-wake-word commands. */
   onTranscript?: (text: string, isFinal: boolean) => void;
   onListeningChange?: (listening: boolean) => void;
   onModeChange?: (mode: WakeMode) => void;
   onSpeakingChange?: (speaking: boolean) => void;
+  /** Emitted on every VoiceState transition. */
+  onVoiceStateChange?: (state: VoiceState) => void;
   onError?: (message: string) => void;
   onUnsupported?: () => void;
 }
@@ -133,6 +152,9 @@ export class JarvisVoice {
   private sensitivity: WakeSensitivity;
   private speaking = false;
   private lastSpoken = '';
+  private voiceState: VoiceState = 'idle';
+  private voiceError: string | null = null;
+  private recognizeTimer: number | null = null;
 
   constructor() {
     this.supported = recognitionCtor() !== null;
@@ -179,6 +201,44 @@ export class JarvisVoice {
     return this.listening;
   }
 
+  /** Current voice-engine state (see VoiceState). */
+  getVoiceState(): VoiceState {
+    return this.voiceState;
+  }
+
+  /** Human-readable description of the last fatal recognition error. */
+  getVoiceError(): string | null {
+    return this.voiceError;
+  }
+
+  private setVoiceState(next: VoiceState): void {
+    if (this.voiceState === next) return;
+    this.voiceState = next;
+    if (next !== 'error') this.voiceError = null;
+    this.cb.onVoiceStateChange?.(next);
+  }
+
+  /** Leave 'recognizing' once speech has paused for a beat. */
+  private scheduleRecognizeCooldown(): void {
+    if (this.recognizeTimer !== null) {
+      window.clearTimeout(this.recognizeTimer);
+      this.recognizeTimer = null;
+    }
+    this.recognizeTimer = window.setTimeout(() => {
+      this.recognizeTimer = null;
+      if (this.voiceState === 'recognizing') {
+        this.setVoiceState(this.listening ? 'listening' : 'idle');
+      }
+    }, 2500);
+  }
+
+  private clearRecognizeCooldown(): void {
+    if (this.recognizeTimer !== null) {
+      window.clearTimeout(this.recognizeTimer);
+      this.recognizeTimer = null;
+    }
+  }
+
   // -- recognition ---------------------------------------------------------
 
   /** Begin continuous listening. First user gesture should call this. */
@@ -194,6 +254,7 @@ export class JarvisVoice {
 
   stop(): void {
     this.wantListening = false;
+    this.clearRecognizeCooldown();
     if (this.restartTimer !== null) {
       window.clearTimeout(this.restartTimer);
       this.restartTimer = null;
@@ -205,8 +266,17 @@ export class JarvisVoice {
     }
   }
 
+  /** Clear an error state and attempt to listen again. */
+  retry(): void {
+    this.voiceError = null;
+    if (this.voiceState === 'error') this.setVoiceState('idle');
+    this.stop();
+    this.start();
+  }
+
   destroy(): void {
     this.stop();
+    this.clearRecognizeCooldown();
     if (this.awakeTimer !== null) {
       window.clearTimeout(this.awakeTimer);
       this.awakeTimer = null;
@@ -244,6 +314,12 @@ export class JarvisVoice {
     if (this.listening === listening) return;
     this.listening = listening;
     this.cb.onListeningChange?.(listening);
+    if (listening) {
+      if (this.voiceState !== 'error') this.setVoiceState('listening');
+    } else if (this.voiceState === 'listening' || this.voiceState === 'recognizing') {
+      this.clearRecognizeCooldown();
+      this.setVoiceState('idle');
+    }
   }
 
   private setMode(mode: WakeMode): void {
@@ -270,6 +346,13 @@ export class JarvisVoice {
       this.stopSpeaking();
     }
 
+    // Speech detected — mark 'recognizing'; a cooldown drops back to
+    // 'listening' once the user pauses.
+    if (this.voiceState !== 'error') {
+      this.setVoiceState('recognizing');
+      this.scheduleRecognizeCooldown();
+    }
+
     if (this.mode === 'sleeping') {
       const hay = (final || interim).toLowerCase();
       if (this.detectWakeWord(hay)) {
@@ -290,14 +373,30 @@ export class JarvisVoice {
     const code = event.error ?? '';
     if (code === 'not-allowed' || code === 'service-not-allowed') {
       this.wantListening = false;
-      this.cb.onError?.(
+      this.failRecognition(
         'Microphone access denied — J.A.R.V.I.S. cannot listen.',
+      );
+    } else if (code === 'audio-capture') {
+      this.wantListening = false;
+      this.failRecognition('No microphone was found on this device.');
+    } else if (code === 'network') {
+      this.wantListening = false;
+      this.failRecognition(
+        'The speech service is unreachable — check your connection.',
       );
     } else if (code === 'aborted' || code === 'no-speech') {
       // Benign: onend will restart when wantListening is set.
     } else if (code) {
-      this.cb.onError?.(`Speech recognition error: ${code}`);
+      this.failRecognition(`Speech recognition error: ${code}`);
     }
+  }
+
+  /** Enter the 'error' voice state with a human-readable message. */
+  private failRecognition(message: string): void {
+    this.clearRecognizeCooldown();
+    this.voiceError = message;
+    this.setVoiceState('error');
+    this.cb.onError?.(message);
   }
 
   private handleEnd(): void {
@@ -388,6 +487,12 @@ export class JarvisVoice {
     if (this.speaking === speaking) return;
     this.speaking = speaking;
     this.cb.onSpeakingChange?.(speaking);
+    if (speaking) {
+      this.clearRecognizeCooldown();
+      this.setVoiceState('speaking');
+    } else if (this.voiceState === 'speaking') {
+      this.setVoiceState(this.listening ? 'listening' : 'idle');
+    }
   }
 }
 
@@ -407,6 +512,7 @@ export function useJarvisVoice(
       onListeningChange: (l) => cbRef.current?.onListeningChange?.(l),
       onModeChange: (m) => cbRef.current?.onModeChange?.(m),
       onSpeakingChange: (s) => cbRef.current?.onSpeakingChange?.(s),
+      onVoiceStateChange: (s) => cbRef.current?.onVoiceStateChange?.(s),
       onError: (e) => cbRef.current?.onError?.(e),
       onUnsupported: () => cbRef.current?.onUnsupported?.(),
     });

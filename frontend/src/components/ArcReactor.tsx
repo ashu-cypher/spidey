@@ -4,9 +4,31 @@ import { useEffect, useRef } from 'react';
 // Arc Reactor — Stark-HUD centerpiece. Canvas 2D, devicePixelRatio-aware,
 // single rAF loop. All animation is transform/opacity-level canvas drawing
 // (no DOM layout work). Reads spectrum imperatively via ref: no re-renders.
+//
+// Modes (driven by real app state via context):
+//   idle       — breathing glow
+//   listening  — brightened + spectrum pulse
+//   thinking   — rotation + drifting data particles
+//   speaking   — gold flare (synced to TTS state)
+//   processing — thin cyan sweep ring while a workflow TOOL step is RUNNING
+//   success    — brief gold pulse when a run completes
+//   error      — crimson pulse when a run fails
+//   attention  — quick zoom flare on wake-word detection
+//   alert      — protocol alerts (crimson, expanding wave)
+// Reduced motion: one static glow frame, no loop. getContext() === null →
+// nothing renders (no crash).
 // ---------------------------------------------------------------------------
 
-export type ReactorMode = 'idle' | 'listening' | 'thinking' | 'speaking' | 'alert';
+export type ReactorMode =
+  | 'idle'
+  | 'listening'
+  | 'thinking'
+  | 'speaking'
+  | 'processing'
+  | 'success'
+  | 'error'
+  | 'attention'
+  | 'alert';
 
 interface Props {
   mode: ReactorMode;
@@ -18,6 +40,26 @@ const CYAN = '#00f0ff';
 const GOLD = '#f59e0b';
 const CRIMSON = '#ef4444';
 
+interface Particle {
+  radius: number; // orbit radius as a multiple of R
+  angle: number;
+  speed: number;
+  size: number;
+}
+
+function makeParticles(): Particle[] {
+  const ps: Particle[] = [];
+  for (let i = 0; i < 16; i += 1) {
+    ps.push({
+      radius: 0.65 + ((i * 37) % 60) / 100, // 0.65–1.24 R, deterministic
+      angle: (i / 16) * Math.PI * 2,
+      speed: 0.5 + ((i * 53) % 100) / 120, // 0.5–1.33 rad/s
+      size: 1.2 + ((i * 29) % 20) / 12, // 1.2–2.8 px
+    });
+  }
+  return ps;
+}
+
 export function ArcReactor({ mode, spectrum, size = 260 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const modeRef = useRef<ReactorMode>(mode);
@@ -27,7 +69,7 @@ export function ArcReactor({ mode, spectrum, size = 260 }: Props) {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx2d = canvas.getContext('2d');
-    if (!ctx2d) return;
+    if (!ctx2d) return; // canvas/WebGL unavailable — render nothing, no crash
     const ctx = ctx2d;
 
     const dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -50,12 +92,18 @@ export function ArcReactor({ mode, spectrum, size = 260 }: Props) {
     const tickAngles = new Array<number>(TICKS);
     for (let i = 0; i < TICKS; i += 1) tickAngles[i] = (i / TICKS) * Math.PI * 2;
 
+    const particles = makeParticles();
+    const reduced =
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
     let raf = 0;
     let last = performance.now();
     let angle = 0;
     let arcAngle = 0;
+    let sweepAngle = 0;
 
-    const loop = (now: number) => {
+    const draw = (now: number) => {
       const dt = Math.min(0.05, (now - last) / 1000);
       last = now;
       const t = now / 1000;
@@ -65,8 +113,12 @@ export function ArcReactor({ mode, spectrum, size = 260 }: Props) {
       const thinking = m === 'thinking';
       const speaking = m === 'speaking';
       const listening = m === 'listening';
+      const processing = m === 'processing';
+      const success = m === 'success';
+      const error = m === 'error';
+      const attention = m === 'attention';
 
-      const ringColor = alert ? CRIMSON : CYAN;
+      const ringColor = alert || error ? CRIMSON : CYAN;
 
       // Spectrum average drives the listening pulse.
       const spec = spectrum.current;
@@ -75,11 +127,18 @@ export function ArcReactor({ mode, spectrum, size = 260 }: Props) {
       specAvg /= Math.max(1, spec.length);
 
       const breathe = 1 + 0.018 * Math.sin(t * 1.6);
-      const pulse = listening ? 1 + specAvg * 0.14 : breathe;
+      const pulse = listening
+        ? 1 + specAvg * 0.14
+        : attention
+          ? 1 + 0.07 * Math.abs(Math.sin(t * 11)) // quick zoom flare
+          : breathe;
       const alertPulse = alert ? 0.5 + 0.5 * Math.sin(t * 9) : 0;
+      const errorPulse = error ? 0.5 + 0.5 * Math.sin(t * 3.2) : 0;
+      const successPulse = success ? 0.5 + 0.5 * Math.sin(t * 6) : 0;
 
       angle += dt * (thinking ? 2.6 : 0.45);
       arcAngle -= dt * (thinking ? 4.2 : 0.7);
+      sweepAngle += dt * (processing ? 7.5 : 0); // fast cyan sweep
 
       ctx.clearRect(0, 0, size, size);
 
@@ -92,7 +151,8 @@ export function ArcReactor({ mode, spectrum, size = 260 }: Props) {
       ctx.translate(cx, cy);
       ctx.rotate(angle);
       ctx.strokeStyle = ringColor;
-      ctx.globalAlpha = alert ? 0.55 + 0.45 * alertPulse : 0.75;
+      ctx.globalAlpha =
+        alert || error ? 0.55 + 0.45 * (alert ? alertPulse : errorPulse) : 0.75;
       ctx.lineWidth = 1.5;
       for (let i = 0; i < TICKS; i += 1) {
         const a = tickAngles[i];
@@ -121,10 +181,56 @@ export function ArcReactor({ mode, spectrum, size = 260 }: Props) {
       }
       ctx.restore();
 
+      // --- processing: thin fast cyan sweep ring (distinct from the UI ring) ---
+      if (processing) {
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(sweepAngle);
+        ctx.strokeStyle = CYAN;
+        ctx.globalAlpha = 0.9;
+        ctx.lineWidth = 1;
+        ctx.shadowColor = CYAN;
+        ctx.shadowBlur = 10;
+        ctx.beginPath();
+        ctx.arc(0, 0, rMid * 1.16, 0, Math.PI * 0.7);
+        ctx.stroke();
+        ctx.restore();
+        // trailing echo arc
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(sweepAngle - 0.9);
+        ctx.strokeStyle = CYAN;
+        ctx.globalAlpha = 0.35;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(0, 0, rMid * 1.16, 0, Math.PI * 0.35);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // --- thinking: drifting data particles ---
+      if (thinking) {
+        ctx.save();
+        ctx.fillStyle = CYAN;
+        for (const p of particles) {
+          p.angle += dt * p.speed;
+          const x = cx + Math.cos(p.angle) * R * p.radius * pulse;
+          const y = cy + Math.sin(p.angle) * R * p.radius * pulse;
+          ctx.globalAlpha = 0.35 + 0.3 * Math.sin(t * 3 + p.angle * 4);
+          ctx.beginPath();
+          ctx.arc(x, y, p.size, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+
       // --- middle glow ring (single shadowBlur use per frame) ---
       ctx.save();
       ctx.strokeStyle = ringColor;
-      ctx.globalAlpha = alert ? 0.5 + 0.5 * alertPulse : 0.6 + 0.15 * Math.sin(t * 2.4);
+      ctx.globalAlpha =
+        alert || error
+          ? 0.5 + 0.5 * (alert ? alertPulse : errorPulse)
+          : 0.6 + 0.15 * Math.sin(t * 2.4);
       ctx.lineWidth = 2.5;
       ctx.shadowColor = ringColor;
       ctx.shadowBlur = 18;
@@ -155,7 +261,12 @@ export function ArcReactor({ mode, spectrum, size = 260 }: Props) {
 
       // --- core ---
       ctx.save();
-      ctx.globalAlpha = alert ? 0.75 + 0.25 * alertPulse : 0.9;
+      ctx.globalAlpha =
+        alert || error
+          ? 0.75 + 0.25 * (alert ? alertPulse : errorPulse)
+          : success
+            ? 0.85 + 0.15 * successPulse
+            : 0.9;
       ctx.fillStyle = coreGrad;
       ctx.beginPath();
       ctx.arc(cx, cy, rCore, 0, Math.PI * 2);
@@ -176,6 +287,33 @@ export function ArcReactor({ mode, spectrum, size = 260 }: Props) {
         ctx.restore();
       }
 
+      // --- success: brief gold pulse ring ---
+      if (success) {
+        ctx.save();
+        ctx.globalAlpha = 0.35 + 0.55 * successPulse;
+        ctx.strokeStyle = GOLD;
+        ctx.lineWidth = 4;
+        ctx.shadowColor = GOLD;
+        ctx.shadowBlur = 22;
+        ctx.beginPath();
+        ctx.arc(cx, cy, rMid * 1.1 * (1 + 0.05 * successPulse), 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // --- attention: quick cyan/white zoom ring ---
+      if (attention) {
+        const wave = (t * 6) % 1;
+        ctx.save();
+        ctx.globalAlpha = 0.7 * (1 - wave);
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(cx, cy, rMid * (1 + wave * 0.22), 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+
       // --- alert: crimson expanding ring ---
       if (alert) {
         const wave = (t * 1.4) % 1;
@@ -188,7 +326,17 @@ export function ArcReactor({ mode, spectrum, size = 260 }: Props) {
         ctx.stroke();
         ctx.restore();
       }
+    };
 
+    if (reduced) {
+      // Reduced motion: a single static glow frame, no loop.
+      last = performance.now();
+      draw(last);
+      return undefined;
+    }
+
+    const loop = (now: number) => {
+      draw(now);
       raf = requestAnimationFrame(loop);
     };
 

@@ -420,3 +420,33 @@ input[type='range'].hud-range::-moz-range-thumb {
 *::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 240, 255, 0.4);
 }
+
+/* Memory-updated badge entrance */
+@keyframes hud-fadein {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.hud-fadein {
+  animation: hud-fadein 0.35s ease-out both;
+}
+
+/* Global reduced-motion: kill HUD blink/flicker/sweep and badge motion. */
+@media (prefers-reduced-motion: reduce) {
+  .hud-blink,
+  .hud-flicker,
+  .hud-sweep-line,
+  .hud-fadein {
+    animation: none !important;
+  }
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+  }
+}

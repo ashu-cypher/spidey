@@ -72,8 +72,13 @@ export function HudButton({
   );
 }
 
-export function HudInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
-  return <input {...props} className={`hud-input ${props.className ?? ''}`} />;
+export function HudInput(
+  props: React.InputHTMLAttributes<HTMLInputElement> & {
+    inputRef?: React.Ref<HTMLInputElement>;
+  },
+) {
+  const { inputRef, ...rest } = props;
+  return <input ref={inputRef} {...rest} className={`hud-input ${props.className ?? ''}`} />;
 }
 
 export function HudSelect(props: React.SelectHTMLAttributes<HTMLSelectElement>) {

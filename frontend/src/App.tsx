@@ -1,16 +1,34 @@
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { JarvisProvider, useJarvis, playSfx } from './jarvis/context';
 import { HexGridBackground, HudPanel } from './components/hud';
 import { CommandCenter } from './components/CommandCenter';
 import { ActivityPanel } from './components/ActivityPanel';
-import { SystemTab } from './components/SystemTab';
-import { ProtocolsTab } from './components/ProtocolsTab';
-import { KnowledgePanel } from './components/KnowledgePanel';
-import { MemoryPanel } from './components/MemoryPanel';
-import { ResumePanel } from './components/ResumePanel';
-import { TasksPanel } from './components/TasksPanel';
-import { RemindersPanel } from './components/RemindersPanel';
-import { VoiceTab } from './components/VoiceTab';
+
+// Heavy tabs load on first visit — Command Center stays instant.
+const SystemTab = lazy(() =>
+  import('./components/SystemTab').then((m) => ({ default: m.SystemTab })),
+);
+const ProtocolsTab = lazy(() =>
+  import('./components/ProtocolsTab').then((m) => ({ default: m.ProtocolsTab })),
+);
+const MemoryPanel = lazy(() =>
+  import('./components/MemoryPanel').then((m) => ({ default: m.MemoryPanel })),
+);
+const KnowledgePanel = lazy(() =>
+  import('./components/KnowledgePanel').then((m) => ({ default: m.KnowledgePanel })),
+);
+const ResumePanel = lazy(() =>
+  import('./components/ResumePanel').then((m) => ({ default: m.ResumePanel })),
+);
+const TasksPanel = lazy(() =>
+  import('./components/TasksPanel').then((m) => ({ default: m.TasksPanel })),
+);
+const RemindersPanel = lazy(() =>
+  import('./components/RemindersPanel').then((m) => ({ default: m.RemindersPanel })),
+);
+const VoiceTab = lazy(() =>
+  import('./components/VoiceTab').then((m) => ({ default: m.VoiceTab })),
+);
 
 type TabId =
   | 'command'
@@ -30,6 +48,16 @@ const TABS: { id: TabId; label: string }[] = [
   { id: 'tasks', label: 'Tasks & Missions' },
   { id: 'voice', label: 'Voice & Persona' },
 ];
+
+function TabFallback() {
+  return (
+    <HudPanel>
+      <p className="font-mono text-xs uppercase tracking-[0.25em] text-cyan-200/40 hud-blink">
+        Loading module…
+      </p>
+    </HudPanel>
+  );
+}
 
 /** Global SSE event bus: /api/events/stream with reconnect backoff. */
 function useGlobalEvents() {
@@ -120,8 +148,8 @@ function HudClock() {
 }
 
 function Shell() {
-  const [tab, setTab] = useState<TabId>('command');
-  const { activityTick } = useJarvis();
+  const { activityTick, activeTab, setActiveTab } = useJarvis();
+  const tab = activeTab as TabId;
   useGlobalEvents();
 
   return (
@@ -160,7 +188,7 @@ function Shell() {
               type="button"
               onClick={() => {
                 playSfx('blip');
-                setTab(t.id);
+                setActiveTab(t.id);
               }}
               className={`shrink-0 px-4 py-2.5 font-mono text-[11px] uppercase tracking-[0.22em] transition-all ${
                 tab === t.id
@@ -183,28 +211,38 @@ function Shell() {
             <ActivityPanel refreshKey={activityTick} />
           </div>
           <div hidden={tab !== 'system'}>
-            <SystemTab />
+            <Suspense fallback={<TabFallback />}>
+              <SystemTab />
+            </Suspense>
           </div>
           <div hidden={tab !== 'security'}>
-            <ProtocolsTab />
+            <Suspense fallback={<TabFallback />}>
+              <ProtocolsTab />
+            </Suspense>
           </div>
           <div hidden={tab !== 'knowledge'}>
             <div className="flex flex-col gap-6">
-              <MemoryPanel />
-              <KnowledgePanel />
-              <HudPanel title="Resume intelligence">
-                <ResumePanel />
-              </HudPanel>
+              <Suspense fallback={<TabFallback />}>
+                <MemoryPanel />
+                <KnowledgePanel />
+                <HudPanel title="Resume intelligence">
+                  <ResumePanel />
+                </HudPanel>
+              </Suspense>
             </div>
           </div>
           <div hidden={tab !== 'tasks'}>
             <div className="flex flex-col gap-6">
-              <TasksPanel />
-              <RemindersPanel />
+              <Suspense fallback={<TabFallback />}>
+                <TasksPanel />
+                <RemindersPanel />
+              </Suspense>
             </div>
           </div>
           <div hidden={tab !== 'voice'}>
-            <VoiceTab />
+            <Suspense fallback={<TabFallback />}>
+              <VoiceTab />
+            </Suspense>
           </div>
         </main>
 
