@@ -168,6 +168,33 @@ class ReminderTool(BaseTool):
             session.flush()
             return {"reminder": _to_dict(row)}
 
+    def list_due(self, user_id: str = "local") -> list[dict]:
+        """Claim reminders whose time has come.
+
+        Returns reminders with ``remind_at <= now``, ``done=False`` and
+        ``notified=False``, marking each ``notified=True`` in the same
+        transaction so a second call does not return them again.
+        """
+        now = _utcnow()
+        with get_session() as session:
+            rows = session.execute(
+                select(Reminder)
+                .where(Reminder.user_id == user_id)
+                .where(Reminder.done.is_(False))
+                .where(Reminder.notified.is_(False))
+                .where(Reminder.remind_at.is_not(None))
+                .where(Reminder.remind_at <= now)
+                .order_by(Reminder.remind_at.asc())
+            ).scalars().all()
+            claimed = [
+                {"id": r.id, "title": r.text, "remind_at": r.remind_at.isoformat()}
+                for r in rows
+            ]
+            for r in rows:
+                r.notified = True
+            session.flush()
+            return claimed
+
     def _list(self, kwargs: dict) -> dict:
         with get_session() as session:
             rows = session.execute(

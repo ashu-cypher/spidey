@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     database_url: str = ""
     vector_backend: str = "local"
     spidey_debug: bool = False
+    persona_name: str = "J.A.R.V.I.S."  # reads PERSONA_NAME
 
 
 settings = Settings()

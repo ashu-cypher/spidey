@@ -1,5 +1,6 @@
 import re
 
+from app.config import settings
 from app.providers.base import AIProvider
 
 _REMEMBER = re.compile(r"\bremember\s+(?:that\s+)?(.+)", re.IGNORECASE)
@@ -56,6 +57,19 @@ _CODE_EXPLAIN = re.compile(
     r"\bexplain\b.{0,40}\bcode\b"
     r"|\bwhat\s+does\s+(this|the)\s+code\s+do\b"
     r"|\bwalk\s+me\s+through\s+(this|the)\s+code\b",
+    re.IGNORECASE,
+)
+# System status (MISSION J.A.R.V.I.S.) — benign read-only phrases only.
+# Destructive phrasing is deliberately never routed to the system tool; the
+# classifier only ever builds {"action": "metrics"} args for this intent.
+_SYSTEM_STATUS = re.compile(
+    r"\bsystem\s+status\b"
+    r"|\bcpu\s+usage\b"
+    r"|\bmemory\s+usage\b"
+    r"|\bdisk\s+usage\b"
+    r"|\bhow\s+is\s+the\s+system\b"
+    r"|\brun(ning)?\s+diagnostics\b"
+    r"|\bdiagnostics\b",
     re.IGNORECASE,
 )
 _CALCULATE = re.compile(
@@ -235,6 +249,14 @@ class RuleBasedProvider(AIProvider):
                 "tools": ["code"],
                 "response_mode": "answer",
             }
+        if _SYSTEM_STATUS.search(text):
+            return {
+                "intent": "system_status",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["system"],
+                "response_mode": "answer",
+            }
         if _CALCULATE.search(text):
             return {
                 "intent": "calculate",
@@ -275,18 +297,21 @@ class RuleBasedProvider(AIProvider):
             return context
         intent = self._classify(text)["intent"]
         if intent == "greeting":
-            return "Hello. Spidey here — what are we tackling?"
+            return (
+                f"At your service, sir. {settings.persona_name} online "
+                "and at your disposal."
+            )
         if intent == "help":
             return (
-                "I can calculate, remember things, manage tasks and reminders, "
-                "search the web, search your uploaded documents, create "
-                "documents/notes, explain code, analyze your resume, and chat. "
-                "Try: 'calculate 12 * 8', 'remind me to call mom tomorrow', "
-                "'search the web for quantum computing', "
-                "'create a document titled Notes with content hello', or "
+                "Certainly, sir. I can calculate, remember things, manage "
+                "tasks and reminders, search the web, search your uploaded "
+                "documents, create documents and notes, explain code, analyze "
+                "your resume, report system status, and chat. Try: "
+                "'calculate 12 * 8', 'remind me to call mom tomorrow', "
+                "'system status', 'search the web for quantum computing', or "
                 "'explain this code: ...'."
             )
         return (
-            "Noted. Give me something concrete — a calculation, "
-            "something to remember, or a task."
+            "Understood, sir — though I shall need something more concrete. "
+            "A calculation, something to remember, or a task, perhaps?"
         )

@@ -35,6 +35,7 @@ __all__ = [
     "DocumentChunk",
     "Task",
     "Reminder",
+    "ProtocolAudit",
     "ToolCall",
     "WorkflowRun",
     "WorkflowStep",
@@ -163,7 +164,23 @@ class Reminder(Base):
     text: Mapped[str] = mapped_column(Text)
     remind_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     done: Mapped[bool] = mapped_column(Boolean, default=False)
+    # MISSION J.A.R.V.I.S.: set True when the reminder is claimed by
+    # ReminderTool.list_due() (the event-bus poller), so each due reminder
+    # is published exactly once.
+    notified: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
+class ProtocolAudit(Base):
+    """MISSION J.A.R.V.I.S. — audit trail of triggered protocols."""
+
+    __tablename__ = "protocol_audits"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_id)
+    protocol_id: Mapped[str] = mapped_column(String(64), index=True)
+    protocol_name: Mapped[str] = mapped_column(String(128), default="")
+    response_text: Mapped[str] = mapped_column(Text, default="")
+    triggered_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 
 class ToolCall(Base):

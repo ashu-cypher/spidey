@@ -24,6 +24,17 @@ class BaseTool(ABC):
     permission: str = "read"
     action_permissions: dict[str, str] = {}
 
+    def permission_for(self, action: str | None, args: dict | None = None) -> str:
+        """Effective permission for an action, optionally args-aware.
+
+        The default implementation honours ``action_permissions`` with a
+        fallback to ``permission``. Tools with args-dependent gating (e.g. the
+        system controller's command allowlist) override this.
+        """
+        if action:
+            return self.action_permissions.get(action, self.permission)
+        return self.permission
+
     @abstractmethod
     async def _run(self, **kwargs) -> dict:
         raise NotImplementedError

@@ -53,4 +53,5 @@ async def test_greeting_no_tools(setup):
     engine = WorkflowEngine()
     run = engine.create_run("Hello Spidey.")
     resp = await agent.run("Hello Spidey.", run, engine)
-    assert "Spidey" in resp
+    # MISSION J.A.R.V.I.S.: the persona now answers as J.A.R.V.I.S., sir.
+    assert "sir" in resp.lower()

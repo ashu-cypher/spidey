@@ -33,6 +33,7 @@ _VERIFY_KEYS: dict[str, tuple[str, ...]] = {
     "search": ("results",),
     "documents": ("document", "documents", "deleted"),
     "code": ("explanation",),
+    "system": ("cpu_percent", "action", "needs_confirmation"),
 }
 
 # Pending confirmations live in memory: token -> pending action. Single-use,
@@ -90,14 +91,18 @@ class SpideyAgent:
         # Tool that failed the most recent _verify() call (Phase 7 re-plan).
         self._last_verify_failure: str | None = None
 
-    def _action_permission(self, tool_name: str, action: str | None) -> str:
-        """Effective permission for a planned tool action (spec 21)."""
+    def _action_permission(
+        self, tool_name: str, action: str | None, args: dict | None = None
+    ) -> str:
+        """Effective permission for a planned tool action (spec 21).
+
+        Delegates to the tool's ``permission_for`` so tools with args-dependent
+        gating (the system controller's command allowlist) are honoured.
+        """
         tool = self.tools.get(tool_name)
         if tool is None:
             return "read"
-        if action:
-            return tool.action_permissions.get(action, tool.permission)
-        return tool.permission
+        return tool.permission_for(action, args)
 
     def pop_pending(self, token: str) -> dict:
         """Consume a pending confirmation; single-use, 10-minute expiry."""
@@ -120,6 +125,14 @@ class SpideyAgent:
             return f'Delete the document "{title}"?'
         if tool_name == "memory" and action == "delete":
             return f'Delete this memory: "{str(title)[:80]}"?'
+        if tool_name == "system":
+            # The tool's own proposal wording is mirrored here so the chat
+            # confirm_token flow shows the exact pending action.
+            if action == "run":
+                return f"Run shell command: {args.get('command', '')}"
+            if action == "open_website":
+                return f"Open website: {args.get('url', '')}"
+            return f"Run system ({action})?"
         return f"Run {tool_name} ({action})?"
 
     def _safe(self, out: Any) -> dict:
@@ -378,7 +391,7 @@ class SpideyAgent:
                 (
                     job
                     for job in tool_jobs
-                    if self._action_permission(job[1], job[2].get("action"))
+                    if self._action_permission(job[1], job[2].get("action"), job[2])
                     == "confirm"
                 ),
                 None,
@@ -505,10 +518,14 @@ class SpideyAgent:
                     "memory",
                     lambda: self.memory.retrieve_relevant(message),
                 )
+            # ``_confirmed`` marks args as user-approved: tools with
+            # args-dependent gating (the system controller) execute instead of
+            # re-requesting confirmation. Other tools ignore the extra kwarg.
+            confirmed_args = dict(args, _confirmed=True)
             result = await _step(
                 pending["plan_step"]["name"],
                 "tool",
-                lambda: self.tools[tool_name].execute(**args),
+                lambda: self.tools[tool_name].execute(**confirmed_args),
                 input_data=args,
                 tool_name=tool_name,
             )
@@ -734,6 +751,10 @@ class SpideyAgent:
             return {"action": "list"}
         if tool == "search":
             return {"query": self._extract_search_query(message)}
+        if tool == "system":
+            # The rule-based intent system_status only ever requests metrics;
+            # destructive phrasing is never routed to this tool.
+            return {"action": "metrics"}
         if tool == "documents":
             return self._extract_document(message)
         if tool == "code":
@@ -885,7 +906,7 @@ class SpideyAgent:
         if intent == "calculate":
             calc = tool_results.get("calculator", {})
             if "result" in calc:
-                return f"{calc.get('expression', '')} = {calc['result']}"
+                return f"{calc.get('expression', '')} = {calc['result']}, sir."
             return ""
         if intent == "remember":
             saved = tool_results.get("memory", {}).get("saved", {})
@@ -961,6 +982,30 @@ class SpideyAgent:
                 f"Document created: \"{doc.get('title')}\". "
                 f"Download it at {doc.get('download_url')}."
             )
+        if intent == "system_status":
+            m = tool_results.get("system", {})
+            if m.get("needs_confirmation"):
+                return m.get("proposal", "")
+            lines = ["All systems nominal, sir. Current readings:"]
+            lines.append(f"- CPU load: {m.get('cpu_percent', 0.0):.1f}%")
+            ram = m.get("ram") or {}
+            lines.append(
+                f"- Memory: {ram.get('percent', 0.0):.1f}% "
+                f"({ram.get('used_gb', 0.0)}/{ram.get('total_gb', 0.0)} GB)"
+            )
+            disk = m.get("disk") or {}
+            lines.append(f"- Disk: {disk.get('percent', 0.0):.1f}%")
+            uptime = int(m.get("uptime_seconds") or 0)
+            hours, rem = divmod(uptime, 3600)
+            minutes, _ = divmod(rem, 60)
+            lines.append(f"- Uptime: {hours}h {minutes}m")
+            batt = m.get("battery")
+            if batt:
+                lines.append(
+                    f"- Battery: {batt.get('percent')}% "
+                    f"({'charging' if batt.get('plugged') else 'on battery'})"
+                )
+            return "\n".join(lines)
         if intent == "code_explain":
             code = tool_results.get("code", {})
             lines = [code.get("explanation", "")]
