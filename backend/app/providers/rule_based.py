@@ -190,6 +190,30 @@ _RESUME_SHOW_LATEST = re.compile(
     r"|\bwhat'?s\s+the\s+(final|latest)\s+version\b",
     re.IGNORECASE,
 )
+# MEW upgrade — prompt generation. Three modes are distinguished:
+#   "build this for me" / "create a todo app for me" -> execute tools
+#   "give me a prompt (for X)" -> generate_prompt (this pattern)
+#   "explain how to build X" / "kaise banau" -> explanation (chat path)
+# The pattern only fires when the word "prompt" names the deliverable, so
+# the build/explain phrasings above never match it.
+_GENERATE_PROMPT = re.compile(
+    r"\bprompt\b.{0,40}\b(build|create|make|write|generate|draft|for)\b"
+    r"|\b(build|create|make|write|generate|draft)\b.{0,40}\bprompt\b"
+    r"|\bprompt\s+bana\s+do\b",
+    re.IGNORECASE,
+)
+
+# MEW upgrade — "explain how to build X" / "kaise banau" is an explanation
+# request, never a build command: it must not fall into task_create via a
+# stray "todo", and it must never trigger generate_prompt. Checked before
+# the task intents; it resolves to the existing chat path.
+_EXPLAIN_HOW = re.compile(
+    r"\bexplain\s+how\s+to\b"
+    r"|\bhow\s+do\s+i\s+build\b"
+    r"|\bkaise\s+banau\b",
+    re.IGNORECASE,
+)
+
 # Conversation continuity — pronoun follow-ups ("why would I use it?",
 # "tell me more about it") and recall of the current conversation ("what
 # did we discuss earlier?"). Both need the request's conversation history.
@@ -310,6 +334,23 @@ class RuleBasedProvider(AIProvider):
                 "requires_tools": True,
                 "tools": ["resume"],
                 "response_mode": "answer",
+            }
+        if _GENERATE_PROMPT.search(text):
+            return {
+                "intent": "generate_prompt",
+                "requires_memory": False,
+                "requires_tools": False,
+                "tools": [],
+                "response_mode": "answer",
+            }
+        if _EXPLAIN_HOW.search(text):
+            # Explanation request, not a build: the existing chat path.
+            return {
+                "intent": "chat_fallback",
+                "requires_memory": False,
+                "requires_tools": False,
+                "tools": [],
+                "response_mode": "chat",
             }
         if _SUMMARIZE_DOC.search(text):
             return {

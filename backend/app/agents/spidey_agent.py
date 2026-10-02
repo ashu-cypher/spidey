@@ -102,6 +102,38 @@ RAG_CONFIDENCE_THRESHOLD = 0.15
 _ATTACHMENT_CONTEXT_MAX = 3
 _ATTACHMENT_CONTEXT_CHARS = 2000
 
+# MEW upgrade — generate_prompt intent: rule-based prompt composer.
+_PROMPT_TARGET_RE = re.compile(r"\bprompt\s+for\s+([A-Za-z][\w.\-]*)\b")
+_PROMPT_BUILD_RE = re.compile(r"\bto\s+build\s+(.+?)[.?!]*$", re.IGNORECASE | re.DOTALL)
+_PROMPT_LIYE_RE = re.compile(r"(.+?)\s+ke\s+liye\s+prompt\s+bana\s+do", re.IGNORECASE)
+# Bare pronouns carry no topic of their own — the composer falls back to the
+# attached material (or a generic phrase) instead of inventing one.
+_PROMPT_BARE_PRONOUNS = {"this", "that", "it", "is", "yeh", "ye", "isko", "iska"}
+
+_PROMPT_BASE_REQUIREMENTS = [
+    "Working, runnable code — no placeholders, no TODO stubs.",
+    "Clear project/file structure with one responsibility per file.",
+    "Setup and run instructions (exact commands).",
+]
+_PROMPT_TODO_REQUIREMENTS = [
+    "Add, list, complete, and delete tasks.",
+    "Persist tasks across restarts (a local file or a small database).",
+    "A simple, clean interface.",
+]
+_PROMPT_WEB_REQUIREMENTS = [
+    "Responsive layout that works on mobile and desktop.",
+    "Clean, modern styling with no broken assets.",
+]
+_PROMPT_CONSTRAINTS = [
+    "Use only well-known, currently maintained libraries — never invent package names or APIs.",
+    "Keep the scope tight: implement the requirements above, nothing extra.",
+    "Every feature must actually run — do not describe features that are not implemented.",
+]
+_PROMPT_OUTPUT = [
+    "Complete source code, ready to run.",
+    "Setup/run instructions.",
+    "A short summary of what was built and how it works.",
+]
 
 LOW_CONFIDENCE_REPLY = (
     "I couldn't find enough information in your documents to answer that reliably."
@@ -1929,6 +1961,10 @@ class SpideyAgent:
                 "इस बातचीत में अभी कोई फ़ाइल अटैच नहीं है — पहले कोई फ़ाइल "
                 "अटैच करें, या दस्तावेज़ नॉलेज बेस में अपलोड करें।",
             )
+        if intent == "generate_prompt":
+            # MEW upgrade: rule-based prompt composer (Goal / Context /
+            # Requirements / Constraints / Expected output).
+            return SpideyAgent._compose_prompt(message, attachments, lang)
         if intent == "resume_save_version":
             v = tool_results.get("resume", {}).get("version", {}) or {}
             num = v.get("version_number")
@@ -2001,6 +2037,100 @@ class SpideyAgent:
             )
         return "\n".join(lines)
 
+    @staticmethod
+    def _extract_prompt_brief(message: str) -> tuple[str, str]:
+        """Return (target_tool, topic) from a generate_prompt request.
+
+        Honest by construction: when the request only says "this"/"that"
+        with no attachment, the caller falls back to a generic phrase rather
+        than an invented topic.
+        """
+        text = (message or "").strip()
+        target = ""
+        m = _PROMPT_TARGET_RE.search(text)
+        if m:
+            candidate = m.group(1)
+            # "prompt for building X" would capture the gerund "building" —
+            # that is not a tool name.
+            if candidate.lower() not in {"a", "an", "the", "me", "my"} and not (
+                candidate.lower().endswith("ing")
+            ):
+                target = candidate
+        topic = ""
+        m = _PROMPT_BUILD_RE.search(text)
+        if m:
+            topic = m.group(1).strip()
+        if not topic:
+            m = _PROMPT_LIYE_RE.search(text)
+            if m:
+                topic = m.group(1).strip()
+        return target, topic
+
+    @staticmethod
+    def _compose_prompt(message: str, attachments: str, lang: str) -> str:
+        """Rule-based prompt composer for the generate_prompt intent.
+
+        Sections: Goal, Context (from the conversation's attachments when
+        available), Requirements, Constraints, Expected output. The whole
+        prompt is fenced so it is one copy-paste away from the builder.
+        """
+        target, topic = SpideyAgent._extract_prompt_brief(message)
+        bare = not topic or topic.lower() in _PROMPT_BARE_PRONOUNS
+        if bare and attachments:
+            topic_phrase = "what is described in the attached material"
+        elif bare:
+            topic_phrase = (
+                "your idea (describe it in one sentence before sending)"
+            )
+        else:
+            topic_phrase = topic
+
+        if attachments:
+            context_text = (
+                "Use the attached material as the source of truth:\n"
+                + attachments[:600]
+            )
+        else:
+            context_text = (
+                "No extra context was provided — add specifics about the "
+                "goal, audience, and tech preferences before sending."
+            )
+
+        requirements = list(_PROMPT_BASE_REQUIREMENTS)
+        lowered = topic.lower()
+        if "todo" in lowered or "task" in lowered:
+            requirements.extend(_PROMPT_TODO_REQUIREMENTS)
+        elif any(
+            w in lowered for w in ("website", "site", "web app", "landing", "page")
+        ):
+            requirements.extend(_PROMPT_WEB_REQUIREMENTS)
+
+        if lang == "hi":
+            headers = ("लक्ष्य", "संदर्भ", "आवश्यकताएँ", "सीमाएँ", "अपेक्षित परिणाम")
+            intro = "यह रहा एक प्रॉम्प्ट — कॉपी करके पेस्ट कर दीजिए"
+        elif lang == "hinglish":
+            headers = ("Goal", "Context", "Requirements", "Constraints", "Expected output")
+            intro = "Yeh raha ek prompt — copy karke paste kar do"
+        else:
+            headers = ("Goal", "Context", "Requirements", "Constraints", "Expected output")
+            intro = "Here's a prompt you can paste"
+        if target:
+            intro += f" into {target}"
+        intro += ":"
+
+        goal_h, ctx_h, req_h, con_h, out_h = headers
+        body = "\n\n".join(
+            [
+                f"{goal_h}\nBuild {topic_phrase}.",
+                f"{ctx_h}\n{context_text}",
+                f"{req_h}\n" + "\n".join(f"- {r}" for r in requirements),
+                f"{con_h}\n" + "\n".join(f"- {c}" for c in _PROMPT_CONSTRAINTS),
+                f"{out_h}\n" + "\n".join(f"- {o}" for o in _PROMPT_OUTPUT),
+            ]
+        )
+        return f"{intro}\n\n```\n{body}\n```"
+
+    @staticmethod
     def _compose_rag_facts(tool_results: dict[str, dict]) -> str:
         """Facts for RAG intents, with citation + confidence gating.
 
