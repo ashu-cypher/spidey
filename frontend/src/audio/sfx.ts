@@ -1,14 +1,14 @@
 import { useEffect, useRef } from 'react';
 
 // ---------------------------------------------------------------------------
-// J.A.R.V.I.S. — synthesized SFX engine (Web Audio API, zero assets).
+// MEW — synthesized SFX engine (Web Audio API, zero assets).
 // A single lazily-created AudioContext feeds a master gain + persistent
 // AnalyserNode so the Arc Reactor can visualize output energy.
 // ---------------------------------------------------------------------------
 
 export type SfxName = 'activation' | 'blip' | 'hum' | 'chime' | 'alert';
 
-const SFX_KEY = 'jarvis.sfx';
+const SFX_KEY = 'mew.sfx';
 
 let ctx: AudioContext | null = null;
 let master: GainNode | null = null;

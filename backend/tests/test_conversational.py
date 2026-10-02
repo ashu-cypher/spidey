@@ -5,7 +5,7 @@ new NL command intents + extraction, pronoun follow-up (chat_followup)
 with/without history, conversation_recall with empty and non-empty
 history, history plumbing through POST /api/chat (bounded to the last 10),
 the GET /api/briefing shape, RAG attribution naming the source document,
-the selective-memory contract, and the JARVIS personality reactions.
+the selective-memory contract, and the MEW personality reactions.
 """
 from __future__ import annotations
 

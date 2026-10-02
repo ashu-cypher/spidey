@@ -4,7 +4,7 @@
 (b) /api/system/metrics shape
 (c) protocols trigger/audit/404
 (d) ReminderTool.list_due claim-once semantics
-(e) JARVIS persona ("sir") in rule-based responses
+(e) MEW persona in rule-based responses ("sir" kept in non-branded templates)
 Plus: args-aware permission gating and the pending-confirmation round trip
 for a non-allowlisted system command (mirrors the chat confirm_token flow).
 """
@@ -218,9 +218,9 @@ async def test_list_due_ignores_future_reminders():
 # --- (e) persona --------------------------------------------------------------
 
 
-async def test_rule_based_greeting_says_sir():
+async def test_rule_based_greeting_names_mew():
     provider = RuleBasedProvider()
-    assert "sir" in (await provider.agenerate("hello")).lower()
+    assert "mew" in (await provider.agenerate("hello")).lower()
 
 
 async def test_rule_based_calc_says_sir():

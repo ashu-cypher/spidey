@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect, useRef, useState } from 'react';
-import { JarvisProvider, useJarvis, playSfx } from './jarvis/context';
+import { MewProvider, useMew, playSfx } from './mew/context';
 import { HexGridBackground, HudPanel } from './components/hud';
 import { CommandCenter } from './components/CommandCenter';
 import { ActivityPanel } from './components/ActivityPanel';
@@ -61,7 +61,7 @@ function TabFallback() {
 
 /** Global SSE event bus: /api/events/stream with reconnect backoff. */
 function useGlobalEvents() {
-  const { speak, flashMode, logTranscript } = useJarvis();
+  const { speak, flashMode, logTranscript } = useMew();
   const refs = useRef({ speak, flashMode, logTranscript });
   refs.current = { speak, flashMode, logTranscript };
 
@@ -87,7 +87,7 @@ function useGlobalEvents() {
           logTranscript('system', `Reminder due: ${data.reminder.title}`);
           let proactive = true;
           try {
-            proactive = localStorage.getItem('jarvis.proactiveVoice') !== '0';
+            proactive = localStorage.getItem('mew.proactiveVoice') !== '0';
           } catch {
             /* default on */
           }
@@ -148,7 +148,7 @@ function HudClock() {
 }
 
 function Shell() {
-  const { activityTick, activeTab, setActiveTab } = useJarvis();
+  const { activityTick, activeTab, setActiveTab } = useMew();
   const tab = activeTab as TabId;
   useGlobalEvents();
 
@@ -166,10 +166,10 @@ function Shell() {
         <header className="mb-6 flex flex-wrap items-end justify-between gap-4">
           <div>
             <h1 className="glow font-mono text-3xl font-bold uppercase tracking-[0.3em] text-white">
-              J.A.R.V.I.S.
+              MEW
             </h1>
             <p className="mt-1 font-mono text-[11px] uppercase tracking-[0.25em] text-cyan-200/50">
-              Just A Rather Very Intelligent System
+              Warm, direct, and a little playful
             </p>
           </div>
           <div className="flex items-center gap-3">
@@ -247,7 +247,7 @@ function Shell() {
         </main>
 
         <footer className="mt-8 text-center font-mono text-[11px] uppercase tracking-[0.3em] text-cyan-200/30">
-          Stark HUD interface · J.A.R.V.I.S. online
+          Stark HUD interface · MEW online
         </footer>
       </div>
     </div>
@@ -256,8 +256,8 @@ function Shell() {
 
 export function App() {
   return (
-    <JarvisProvider>
+    <MewProvider>
       <Shell />
-    </JarvisProvider>
+    </MewProvider>
   );
 }

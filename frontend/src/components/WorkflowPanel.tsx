@@ -4,7 +4,7 @@ import {
   friendlyStepLabel,
   sanitizeStepError,
   toolNameOf,
-} from '../jarvis/steps';
+} from '../mew/steps';
 
 interface StatusMeta {
   glyph: string;

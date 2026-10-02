@@ -83,7 +83,7 @@ _CODE_EXPLAIN = re.compile(
     r"|\bwalk\s+me\s+through\s+(this|the)\s+code\b",
     re.IGNORECASE,
 )
-# System status (MISSION J.A.R.V.I.S.) — benign read-only phrases only.
+# System status (MISSION MEW) — benign read-only phrases only.
 # Destructive phrasing is deliberately never routed to the system tool; the
 # classifier only ever builds {"action": "metrics"} args for this intent.
 _SYSTEM_STATUS = re.compile(
@@ -527,8 +527,7 @@ class RuleBasedProvider(AIProvider):
             )
         if intent == "greeting":
             return pick(
-                f"At your service, sir. {settings.persona_name} online "
-                "and at your disposal.",
+                f"Hey! {settings.persona_name} here — ready when you are.",
                 "Hey! Main Spidey hoon — bolo, kya kaam hai?",
                 "नमस्ते! मैं स्पाइडी हूँ। आज मैं आपकी क्या मदद कर सकता हूँ?",
             )

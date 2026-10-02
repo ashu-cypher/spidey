@@ -164,7 +164,7 @@ class Reminder(Base):
     text: Mapped[str] = mapped_column(Text)
     remind_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     done: Mapped[bool] = mapped_column(Boolean, default=False)
-    # MISSION J.A.R.V.I.S.: set True when the reminder is claimed by
+    # MISSION MEW: set True when the reminder is claimed by
     # ReminderTool.list_due() (the event-bus poller), so each due reminder
     # is published exactly once.
     notified: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -172,7 +172,7 @@ class Reminder(Base):
 
 
 class ProtocolAudit(Base):
-    """MISSION J.A.R.V.I.S. — audit trail of triggered protocols."""
+    """MISSION MEW — audit trail of triggered protocols."""
 
     __tablename__ = "protocol_audits"
 

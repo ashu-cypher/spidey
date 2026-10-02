@@ -2,11 +2,11 @@ import { useEffect, useState } from 'react';
 import { getProtocolAudit, getProtocols, triggerProtocol } from '../api';
 import type { ProtocolAuditEntry, ProtocolDef } from '../api';
 import { HudButton, HudEmpty, HudError, HudPanel, HudSelect, HudTitle } from './hud';
-import { useJarvis } from '../jarvis/context';
+import { useMew } from '../mew/context';
 import { playSfx } from '../audio/sfx';
 import type { SfxName } from '../audio/sfx';
 
-const CONFIRM_KEY = 'jarvis.confirmMode';
+const CONFIRM_KEY = 'mew.confirmMode';
 type ConfirmMode = 'always' | 'lowrisk-auto';
 
 /** Map the backend's sfx tag to a synthesized SFX name (safe fallback: alert). */
@@ -16,7 +16,7 @@ function toSfxName(raw: string): SfxName {
 }
 
 export function ProtocolsTab() {
-  const { speak, flashMode, logTranscript, setReactorMode } = useJarvis();
+  const { speak, flashMode, logTranscript, setReactorMode } = useMew();
   const [protocols, setProtocols] = useState<ProtocolDef[]>([]);
   const [audit, setAudit] = useState<ProtocolAuditEntry[]>([]);
   const [error, setError] = useState<string | null>(null);

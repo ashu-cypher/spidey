@@ -1,4 +1,4 @@
-"""MISSION J.A.R.V.I.S. — system controller tool ("system").
+"""MISSION MEW — system controller tool ("system").
 
 Controlled, sandboxed local-system access. This is NOT the disabled ShellTool:
 every action here is gated by design, and the gating is documented below.

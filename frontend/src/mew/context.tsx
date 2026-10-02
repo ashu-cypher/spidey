@@ -9,20 +9,20 @@ import {
 } from 'react';
 import type { ReactNode } from 'react';
 import type { ReactorMode } from '../components/ArcReactor';
-import { useJarvisVoice, VOICE_LANG_KEY, VOLUME_STORAGE_KEY } from '../voice/jarvisVoice';
+import { useMewVoice, VOICE_LANG_KEY, VOLUME_STORAGE_KEY } from '../voice/mewVoice';
 import type {
-  JarvisVoice,
+  MewVoice,
   VoiceLangSetting,
   VoiceState,
   WakeMode,
-} from '../voice/jarvisVoice';
+} from '../voice/mewVoice';
 import { playSfx, setSfxEnabled, unlockAudio, useSpectrum } from '../audio/sfx';
 import { getBriefing } from '../api';
 import type { ChatHistoryTurn, WorkflowRun, WorkflowStep } from '../api';
 
 export interface TranscriptLine {
   id: number;
-  role: 'user' | 'jarvis' | 'system';
+  role: 'user' | 'mew' | 'system';
   text: string;
   at: string;
 }
@@ -55,13 +55,13 @@ export interface StreamActivityItem {
   failed: boolean;
 }
 
-interface JarvisContextValue {
-  voice: JarvisVoice;
+interface MewContextValue {
+  voice: MewVoice;
   voiceSupported: boolean;
   ttsSupported: boolean;
   wakeMode: WakeMode;
   listening: boolean;
-  /** True while J.A.R.V.I.S. is speaking (TTS). */
+  /** True while MEW is speaking (TTS). */
   speaking: boolean;
   /** Composite voice UX state: idle|listening|recognizing|thinking|speaking|error. */
   voiceState: VoiceState;
@@ -139,11 +139,11 @@ interface JarvisContextValue {
   endConversation: () => void;
 }
 
-const JarvisContext = createContext<JarvisContextValue | null>(null);
+const MewContext = createContext<MewContextValue | null>(null);
 
-export function useJarvis(): JarvisContextValue {
-  const ctx = useContext(JarvisContext);
-  if (!ctx) throw new Error('useJarvis must be used inside JarvisProvider');
+export function useMew(): MewContextValue {
+  const ctx = useContext(MewContext);
+  if (!ctx) throw new Error('useMew must be used inside MewProvider');
   return ctx;
 }
 
@@ -177,12 +177,12 @@ function readStoredVolume(): number {
   }
 }
 
-export function JarvisProvider({ children }: { children: ReactNode }) {
+export function MewProvider({ children }: { children: ReactNode }) {
   const [reactorMode, setReactorModeState] = useState<ReactorMode>('idle');
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
   const [sfxEnabled, setSfxEnabledStateInner] = useState<boolean>(() => {
     try {
-      return localStorage.getItem('jarvis.sfx') !== '0';
+      return localStorage.getItem('mew.sfx') !== '0';
     } catch {
       return true;
     }
@@ -383,7 +383,7 @@ export function JarvisProvider({ children }: { children: ReactNode }) {
     if (flashRef.current === null) setReactorModeState(baseMode);
   }, [baseMode]);
 
-  const { voice, supported: voiceSupported, ttsSupported } = useJarvisVoice({
+  const { voice, supported: voiceSupported, ttsSupported } = useMewVoice({
     onTranscript: (text, isFinal) => {
       if (!isFinal) return;
       // The registered chat sender logs the transcript line itself.
@@ -397,7 +397,7 @@ export function JarvisProvider({ children }: { children: ReactNode }) {
       if (mode === 'awake') {
         playSfx('blip');
         flashMode('attention', 900);
-        logTranscript('system', 'Wake word detected — J.A.R.V.I.S. awake.');
+        logTranscript('system', 'Wake word detected — MEW awake.');
       }
     },
     onSpeakingChange: (isSpeaking) => {
@@ -421,7 +421,7 @@ export function JarvisProvider({ children }: { children: ReactNode }) {
       );
     },
     onBargeIn: () => {
-      // User spoke over J.A.R.V.I.S.: the in-flight chat stream is aborted
+      // User spoke over MEW: the in-flight chat stream is aborted
       // so the new utterance is processed fresh (TTS was already cancelled
       // by the engine).
       abortStream();
@@ -438,7 +438,7 @@ export function JarvisProvider({ children }: { children: ReactNode }) {
 
   const speak = useCallback(
     (text: string) => {
-      logTranscript('jarvis', text);
+      logTranscript('mew', text);
       voice.speak(text);
       // If TTS is unsupported, still flare briefly so there is feedback.
       if (!voice.ttsSupported) flashMode('speaking', 1200);
@@ -550,7 +550,7 @@ export function JarvisProvider({ children }: { children: ReactNode }) {
       }
       const due = b.due_soon[0];
       if (due) parts.push(`Sir, you have a reminder due soon: ${due.text}.`);
-      if (parts.length > 0) logTranscript('jarvis', parts.join(' '));
+      if (parts.length > 0) logTranscript('mew', parts.join(' '));
     })();
   }, [logTranscript]);
 
@@ -561,7 +561,7 @@ export function JarvisProvider({ children }: { children: ReactNode }) {
     [],
   );
 
-  const value = useMemo<JarvisContextValue>(
+  const value = useMemo<MewContextValue>(
     () => ({
       voice,
       voiceSupported,
@@ -673,7 +673,7 @@ export function JarvisProvider({ children }: { children: ReactNode }) {
     ],
   );
 
-  return <JarvisContext.Provider value={value}>{children}</JarvisContext.Provider>;
+  return <MewContext.Provider value={value}>{children}</MewContext.Provider>;
 }
 
 export { playSfx };

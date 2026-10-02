@@ -4,7 +4,7 @@ Honest scope: the DDG instant-answer endpoint returns an abstract plus
 related topics — great for quick facts, not a full web index. Any failure
 degrades to a user-safe ToolError, never a traceback.
 
-MISSION J.A.R.V.I.S. additions:
+MISSION MEW additions:
 * ``mode``: "web" (existing behaviour) or "news". DDG's instant-answer API
   has no dedicated news endpoint, so "news" reuses the same call and labels
   the results accordingly — graceful, and honest about it.

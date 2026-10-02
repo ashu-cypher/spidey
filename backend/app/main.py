@@ -10,7 +10,7 @@ from app.routes import chat, events, health, knowledge, protocols, resume, syste
 
 logger = logging.getLogger("spidey")
 
-# MISSION J.A.R.V.I.S.: how often the background poller claims due reminders.
+# MISSION MEW: how often the background poller claims due reminders.
 _REMINDER_POLL_SECONDS = 30
 
 

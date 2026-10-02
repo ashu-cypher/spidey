@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { HudChip } from './hud';
-import { useJarvis } from '../jarvis/context';
-import { runContextOf } from '../jarvis/steps';
+import { useMew } from '../mew/context';
+import { runContextOf } from '../mew/steps';
 
 // ---------------------------------------------------------------------------
 // Contextual quick actions under the chat input. Every chip does something
@@ -33,7 +33,7 @@ export function QuickActions() {
     prefillChat,
     focusChatInput,
     setActiveTab,
-  } = useJarvis();
+  } = useMew();
 
   const context = useMemo(
     () => (lastRun ? runContextOf(lastRun.steps) : 'none'),

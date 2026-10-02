@@ -2,11 +2,11 @@ import { useEffect, useRef } from 'react';
 import { stripForSpeech } from '../hooks/useVoice';
 
 // ---------------------------------------------------------------------------
-// J.A.R.V.I.S. — voice engine built on the free browser Web Speech API.
+// MEW — voice engine built on the free browser Web Speech API.
 // - Continuous recognition with interim results.
-// - Wake-word gating: 'sleeping' mode only reacts to "jarvis"/"hey jarvis",
+// - Wake-word gating: 'sleeping' mode only reacts to "mew"/"hey mew",
 //   then stays 'awake' for 60 s of activity.
-// - Barge-in: user speech while J.A.R.V.I.S. is talking cancels speech and
+// - Barge-in: user speech while MEW is talking cancels speech and
 //   keeps the mic open.
 // - speak(): British voice preference (Google UK English Male > Daniel >
 //   en-GB > default), pitch/rate from localStorage.
@@ -14,39 +14,39 @@ import { stripForSpeech } from '../hooks/useVoice';
 // ---------------------------------------------------------------------------
 
 // Minimal structural typings for the Web Speech API (not in TS's DOM lib).
-interface JarvisAlternative {
+interface MewAlternative {
   transcript: string;
   confidence: number;
 }
-interface JarvisResult {
+interface MewResult {
   isFinal: boolean;
   length: number;
-  [index: number]: JarvisAlternative;
+  [index: number]: MewAlternative;
 }
-interface JarvisResultList {
+interface MewResultList {
   length: number;
-  [index: number]: JarvisResult;
+  [index: number]: MewResult;
 }
-interface JarvisRecognitionEvent {
+interface MewRecognitionEvent {
   resultIndex: number;
-  results: JarvisResultList;
+  results: MewResultList;
 }
-interface JarvisRecognitionError {
+interface MewRecognitionError {
   error: string;
   message?: string;
 }
-interface JarvisRecognition {
+interface MewRecognition {
   continuous: boolean;
   interimResults: boolean;
   lang: string;
   start(): void;
   stop(): void;
   abort(): void;
-  onresult: ((event: JarvisRecognitionEvent) => void) | null;
-  onerror: ((event: JarvisRecognitionError) => void) | null;
+  onresult: ((event: MewRecognitionEvent) => void) | null;
+  onerror: ((event: MewRecognitionError) => void) | null;
   onend: (() => void) | null;
 }
-type RecognitionCtor = new () => JarvisRecognition;
+type RecognitionCtor = new () => MewRecognition;
 
 function recognitionCtor(): RecognitionCtor | null {
   if (typeof window === 'undefined') return null;
@@ -77,7 +77,7 @@ export type VoiceState =
   | 'speaking'
   | 'error';
 
-export interface JarvisVoiceCallbacks {
+export interface MewVoiceCallbacks {
   /** Final + interim transcripts. In 'sleeping' mode, only post-wake-word commands. */
   onTranscript?: (text: string, isFinal: boolean) => void;
   onListeningChange?: (listening: boolean) => void;
@@ -87,19 +87,19 @@ export interface JarvisVoiceCallbacks {
   onVoiceStateChange?: (state: VoiceState) => void;
   onError?: (message: string) => void;
   onUnsupported?: () => void;
-  /** User speech detected while J.A.R.V.I.S. was speaking (barge-in). */
+  /** User speech detected while MEW was speaking (barge-in). */
   onBargeIn?: () => void;
   /** The TTS phrase queue drained completely (natural end, not cancel). */
   onTtsQueueDrained?: () => void;
 }
 
 const AWAKE_WINDOW_MS = 60_000;
-const WAKE_KEY = 'jarvis.wakeSensitivity';
-const PITCH_KEY = 'jarvis.pitch';
-const RATE_KEY = 'jarvis.rate';
-const VOICE_URI_KEY = 'jarvis.voiceURI';
-export const VOICE_LANG_KEY = 'jarvis.voiceLang';
-const VOLUME_KEY = 'jarvis.volume';
+const WAKE_KEY = 'mew.wakeSensitivity';
+const PITCH_KEY = 'mew.pitch';
+const RATE_KEY = 'mew.rate';
+const VOICE_URI_KEY = 'mew.voiceURI';
+export const VOICE_LANG_KEY = 'mew.voiceLang';
+const VOLUME_KEY = 'mew.volume';
 export const VOLUME_STORAGE_KEY = VOLUME_KEY;
 
 /** Voice language setting: recognition locale + TTS voice preference. */
@@ -213,12 +213,12 @@ interface QueuedSpeech {
   onDone?: () => void;
 }
 
-export class JarvisVoice {
+export class MewVoice {
   readonly supported: boolean;
   readonly ttsSupported: boolean;
 
-  private cb: JarvisVoiceCallbacks = {};
-  private rec: JarvisRecognition | null = null;
+  private cb: MewVoiceCallbacks = {};
+  private rec: MewRecognition | null = null;
   private wantListening = false;
   private listening = false;
   private mode: WakeMode = 'sleeping';
@@ -254,7 +254,7 @@ export class JarvisVoice {
 
   // -- configuration -------------------------------------------------------
 
-  setCallbacks(cb: JarvisVoiceCallbacks): void {
+  setCallbacks(cb: MewVoiceCallbacks): void {
     this.cb = { ...this.cb, ...cb };
   }
 
@@ -427,7 +427,7 @@ export class JarvisVoice {
       this.cb.onUnsupported?.();
       return;
     }
-    const rec: JarvisRecognition = new Ctor();
+    const rec: MewRecognition = new Ctor();
     rec.continuous = true;
     rec.interimResults = true;
     rec.lang = recognitionLocale(this.recognitionLang);
@@ -464,7 +464,7 @@ export class JarvisVoice {
     this.cb.onModeChange?.(mode);
   }
 
-  private handleResult(event: JarvisRecognitionEvent): void {
+  private handleResult(event: MewRecognitionEvent): void {
     let interim = '';
     let final = '';
     for (let i = event.resultIndex; i < event.results.length; i += 1) {
@@ -476,7 +476,7 @@ export class JarvisVoice {
     const heard = (final || interim).trim();
     if (!heard) return;
 
-    // Barge-in: user talking while J.A.R.V.I.S. speaks cancels speech,
+    // Barge-in: user talking while MEW speaks cancels speech,
     // recognition keeps running. The UI layer also aborts the in-flight
     // chat stream via onBargeIn so the new utterance is processed fresh.
     if (this.speaking) {
@@ -507,12 +507,12 @@ export class JarvisVoice {
     this.cb.onTranscript?.(heard, Boolean(final));
   }
 
-  private handleError(event: JarvisRecognitionError): void {
+  private handleError(event: MewRecognitionError): void {
     const code = event.error ?? '';
     if (code === 'not-allowed' || code === 'service-not-allowed') {
       this.wantListening = false;
       this.failRecognition(
-        'Microphone access denied — J.A.R.V.I.S. cannot listen.',
+        'Microphone access denied — MEW cannot listen.',
       );
     } else if (code === 'audio-capture') {
       this.wantListening = false;
@@ -557,13 +557,13 @@ export class JarvisVoice {
 
   private detectWakeWord(lowerText: string): boolean {
     if (this.sensitivity === 'strict') {
-      return /^\s*(hey[,\s]+)?jarvis\b/.test(lowerText);
+      return /^\s*(hey[,\s]+)?mew\b/.test(lowerText);
     }
-    return lowerText.includes('jarvis');
+    return lowerText.includes('mew');
   }
 
   private stripWakeWord(text: string): string {
-    return text.replace(/^\s*(hey[,\s]+)?jarvis[,\s]*/i, '');
+    return text.replace(/^\s*(hey[,\s]+)?mew[,\s]*/i, '');
   }
 
   /** Switch to awake mode for 60 s (called on wake word or manual activation). */
@@ -707,17 +707,17 @@ export class JarvisVoice {
   }
 }
 
-/** React hook owning a single JarvisVoice for the app lifetime. */
-export function useJarvisVoice(
-  callbacks?: JarvisVoiceCallbacks,
-): { voice: JarvisVoice; supported: boolean; ttsSupported: boolean } {
-  const voiceRef = useRef<JarvisVoice | null>(null);
-  if (!voiceRef.current) voiceRef.current = new JarvisVoice();
-  const cbRef = useRef<JarvisVoiceCallbacks | undefined>(callbacks);
+/** React hook owning a single MewVoice for the app lifetime. */
+export function useMewVoice(
+  callbacks?: MewVoiceCallbacks,
+): { voice: MewVoice; supported: boolean; ttsSupported: boolean } {
+  const voiceRef = useRef<MewVoice | null>(null);
+  if (!voiceRef.current) voiceRef.current = new MewVoice();
+  const cbRef = useRef<MewVoiceCallbacks | undefined>(callbacks);
   cbRef.current = callbacks;
 
   useEffect(() => {
-    const voice = voiceRef.current as JarvisVoice;
+    const voice = voiceRef.current as MewVoice;
     voice.setCallbacks({
       onTranscript: (t, f) => cbRef.current?.onTranscript?.(t, f),
       onListeningChange: (l) => cbRef.current?.onListeningChange?.(l),
@@ -734,6 +734,6 @@ export function useJarvisVoice(
     };
   }, []);
 
-  const v = voiceRef.current as JarvisVoice;
+  const v = voiceRef.current as MewVoice;
   return { voice: v, supported: v.supported, ttsSupported: v.ttsSupported };
 }

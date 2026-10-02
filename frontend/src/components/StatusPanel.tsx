@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { getHealth, getMemories, getSystemMetrics, listDocuments } from '../api';
-import { useJarvis } from '../jarvis/context';
+import { useMew } from '../mew/context';
 
 // ---------------------------------------------------------------------------
 // Status panel — REAL backend state only. Collapsed by default; expands on
@@ -30,7 +30,7 @@ function Dot({ ok }: { ok: boolean | null }) {
 }
 
 export function StatusPanel() {
-  const { voiceSupported } = useJarvis();
+  const { voiceSupported } = useMew();
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<Status>({
     spidey: 'unknown',

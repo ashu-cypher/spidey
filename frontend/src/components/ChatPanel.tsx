@@ -9,8 +9,8 @@ import type {
 import { StreamSpeechTracker } from '../chat/streamSpeech';
 import { QuickActions } from './QuickActions';
 import { HudButton, HudChip, HudInput, HudPanel } from './hud';
-import { useJarvis } from '../jarvis/context';
-import type { SendChatOpts } from '../jarvis/context';
+import { useMew } from '../mew/context';
+import type { SendChatOpts } from '../mew/context';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -102,7 +102,7 @@ export function ChatPanel() {
     markStreamActivityError,
     clearStreamActivity,
     registerStreamAbort,
-  } = useJarvis();
+  } = useMew();
 
   const inputRef = useRef<HTMLInputElement | null>(null);
   const lastSentRef = useRef<string>('');

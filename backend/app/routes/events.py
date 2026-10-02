@@ -1,4 +1,4 @@
-"""MISSION J.A.R.V.I.S. — Server-Sent Events stream for the event bus.
+"""MISSION MEW — Server-Sent Events stream for the event bus.
 
 GET /api/events/stream -> text/event-stream. Replays every published event
 (reminder_due, protocol, ...) and emits a ``: heartbeat`` comment every 15s

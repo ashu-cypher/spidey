@@ -399,22 +399,22 @@ expiry). Direct REST deletes (explicit UI clicks) don't need confirmation.
   observability, one transient retry, bounded re-plan, `SPIDEY_DEBUG` ✅
   (history survives restarts; embeddings still the DEV hashing fallback)
 
-## J.A.R.V.I.S. transformation
+## MEW transformation
 
-SPIDEY now runs a J.A.R.V.I.S. (Just A Rather Very Intelligent System) persona
-and Stark HUD interface on top of the same agent core — all existing tools,
+SPIDEY now runs a MEW persona — warm, direct, concise, and a little playful —
+with a Stark HUD interface on top of the same agent core. All existing tools,
 routes, DB models, and workflows are unchanged.
 
-**Persona** — the assistant addresses you as "sir", speaks calm/witty/politely
-("Right away, sir.", "Running diagnostics now, sir."). Set `PERSONA_NAME` in
-`backend/.env` to rename it. The OpenAI/Ollama providers send a JARVIS system
-prompt; the default rule-based provider needs no API key.
+**Persona** — the assistant keeps a warm, friendly tone ("sir" still appears in
+several reply templates). Set `PERSONA_NAME` in `backend/.env` to rename it.
+The OpenAI/Ollama providers send a MEW system prompt; the default rule-based
+provider needs no API key.
 
 **Voice** (browser only — Chrome/Edge recommended):
 - Requires microphone permission and a secure context (HTTPS or `localhost`).
-- Continuous hands-free mode with wake-word gating: say "Jarvis" / "Hey Jarvis"
+- Continuous hands-free mode with wake-word gating: say "Mew" / "Hey Mew"
   to wake it; it sleeps again after 60 s of silence.
-- Barge-in: speaking while J.A.R.V.I.S. talks stops its speech and it listens.
+- Barge-in: speaking while MEW talks stops its speech and it listens.
 - British voice auto-selected (`Google UK English Male` → `Daniel` → `en-GB` →
   default); pitch/rate adjustable in the Voice & Persona tab.
 - Voice was build-verified only (no microphone in this environment).
@@ -430,7 +430,7 @@ synthesized in-browser (Web Audio SFX, Canvas reactor) — zero external assets.
 | ------ | --------------------------- | ---------------------------------------- |
 | GET    | `/api/system/metrics`       | CPU/RAM/disk/uptime/battery of the **server** machine |
 | GET    | `/api/protocols`            | 5 scripted protocols (Clean Slate, House Party, Sentry Mode, Mute Audio, Silent Running) |
-| POST   | `/api/protocols/trigger`    | `{"id": str}` → scripted JARVIS response + audit row |
+| POST   | `/api/protocols/trigger`    | `{"id": str}` → scripted MEW response + audit row |
 | GET    | `/api/protocols/audit`      | Last 50 protocol triggers                |
 | GET    | `/api/events/stream`        | SSE: `reminder_due` / `protocol` events + heartbeats |
 

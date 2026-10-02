@@ -1,4 +1,4 @@
-"""MISSION J.A.R.V.I.S. — process-global asyncio event bus.
+"""MISSION MEW — process-global asyncio event bus.
 
 A minimal pub/sub: ``publish(event)`` fans an event dict out to every queue
 created by ``subscribe()``; subscribers consume their own ``asyncio.Queue``

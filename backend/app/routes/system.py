@@ -1,4 +1,4 @@
-"""MISSION J.A.R.V.I.S. — system metrics route (read-only).
+"""MISSION MEW — system metrics route (read-only).
 
 GET /api/system/metrics instantiates the SystemControllerTool directly with
 ``action="metrics"`` — no confirmation is needed because metrics are

@@ -1,8 +1,8 @@
-"""MISSION J.A.R.V.I.S. — protocols API.
+"""MISSION MEW — protocols API.
 
 GET  /api/protocols          -> the five house protocols (id, name,
                                description, sfx).
-POST /api/protocols/trigger -> engage a protocol: scripted JARVIS response,
+POST /api/protocols/trigger -> engage a protocol: scripted MEW response,
                                an audit row, and a "protocol" event on the
                                event bus. Unknown ids -> 404.
 GET  /api/protocols/audit    -> last 50 audit entries, newest first.

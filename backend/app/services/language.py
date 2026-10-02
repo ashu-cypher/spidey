@@ -57,10 +57,10 @@ _HIGHLY_DISTINCTIVE = {"mujhe", "baje", "chahiye", "kya"}
 # Sentence terminators, including the Devanagari danda.
 _SENTENCE_END = re.compile(r"[^.!?\u0964]+[.!?\u0964]+\s*|[^.!?\u0964]+$")
 
-# Initialisms like J.A.R.V.I.S. or U.S.A.: their inner periods are not
-# sentence ends. Without protection the splitter shreds "J.A.R.V.I.S."
-# into "J." "A." "R." … — and the voice summary becomes the nonsense
-# "At your service, sir. J.", which TTS would speak literally.
+# Initialisms like M.E.W. or U.S.A.: their inner periods are not
+# sentence ends. Without protection the splitter shreds "M.E.W."
+# into "M." "E." "W." … — and the voice summary becomes the nonsense
+# "At your service. M.", which TTS would speak literally.
 _INITIALISM = re.compile(r"\b(?:[A-Z]\.){2,}")
 
 
@@ -100,7 +100,7 @@ def split_sentences(text: str) -> list[str]:
     ``"".join(split_sentences(t))`` reassembles ``t`` exactly (this is what
     the streaming path relies on for delta reassembly).
 
-    Initialisms (``J.A.R.V.I.S.``, ``U.S.A.``) are shielded from splitting
+    Initialisms (``M.E.W.``, ``U.S.A.``) are shielded from splitting
     first and restored afterwards, so exact reassembly still holds.
     """
     src = text or ""

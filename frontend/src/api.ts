@@ -83,7 +83,7 @@ export async function postChat(
   return json(res);
 }
 
-// --- Streaming chat (J.A.R.V.I.S. voice-first pass) --------------------------
+// --- Streaming chat (MEW voice-first pass) --------------------------
 
 export type VoiceLangSetting = 'auto' | 'en' | 'hi' | 'hinglish';
 
@@ -604,7 +604,7 @@ export function resumeDownloadUrl(id: string, format: 'txt' | 'md'): string {
   return `/api/resume/versions/${encodeURIComponent(id)}/download?format=${format}`;
 }
 
-// --- System telemetry (J.A.R.V.I.S. mission) ---------------------------------
+// --- System telemetry (MEW mission) ---------------------------------
 
 export interface SystemMetrics {
   cpu_percent: number;
@@ -620,7 +620,7 @@ export async function getSystemMetrics(): Promise<SystemMetrics> {
   return json<SystemMetrics>(res);
 }
 
-// --- Security protocols (J.A.R.V.I.S. mission) --------------------------------
+// --- Security protocols (MEW mission) --------------------------------
 
 export interface ProtocolDef {
   id: string;

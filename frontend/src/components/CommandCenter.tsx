@@ -3,8 +3,8 @@ import { ArcReactor } from './ArcReactor';
 import { ChatPanel } from './ChatPanel';
 import { StatusPanel } from './StatusPanel';
 import { Gauge, HudChip, HudEmpty, HudPanel } from './hud';
-import { useJarvis } from '../jarvis/context';
-import type { VoiceState } from '../voice/jarvisVoice';
+import { useMew } from '../mew/context';
+import type { VoiceState } from '../voice/mewVoice';
 import { getHealth, getSystemMetrics } from '../api';
 import type { SystemMetrics } from '../api';
 
@@ -33,7 +33,7 @@ function micVisual(state: VoiceState): MicVisual {
       return {
         icon: '⏹',
         label: 'Stop',
-        title: 'Stop J.A.R.V.I.S. speaking',
+        title: 'Stop MEW speaking',
         pulse: false,
         danger: true,
       };
@@ -87,7 +87,7 @@ function MicButton() {
     toggleListening,
     retryVoice,
     stopSpeaking,
-  } = useJarvis();
+  } = useMew();
 
   const onClick = () => {
     if (voiceState === 'speaking') {
@@ -140,7 +140,7 @@ function MicButton() {
 }
 
 function WakePill() {
-  const { voiceSupported, voiceState, wakeMode } = useJarvis();
+  const { voiceSupported, voiceState, wakeMode } = useMew();
   if (!voiceSupported)
     return <span className="hud-pill hud-pill-off">Voice unsupported</span>;
   if (voiceState === 'listening' || voiceState === 'recognizing')
@@ -156,12 +156,12 @@ function WakePill() {
     return <span className="hud-pill hud-pill-on">Thinking</span>;
   if (wakeMode === 'awake')
     return <span className="hud-pill hud-pill-on">Awake — 60s window</span>;
-  return <span className="hud-pill hud-pill-off">Standby — say “Jarvis”</span>;
+  return <span className="hud-pill hud-pill-off">Standby — say “Mew”</span>;
 }
 
 /** Real thinking state: the latest running stream-activity label. */
 function ThinkingLine() {
-  const { chatBusy, streamActivity } = useJarvis();
+  const { chatBusy, streamActivity } = useMew();
   if (!chatBusy) return null;
   const current = [...streamActivity]
     .reverse()
@@ -185,7 +185,7 @@ function ConversationToggle() {
     endConversation,
     voiceSupported,
     chatBusy,
-  } = useJarvis();
+  } = useMew();
 
   if (!voiceSupported) return null;
 
@@ -221,7 +221,7 @@ function ConversationToggle() {
  * completes; ✗ on failure. Nothing is invented or timed.
  */
 function ActivityFeed() {
-  const { streamActivity } = useJarvis();
+  const { streamActivity } = useMew();
   const [open, setOpen] = useState(false);
   if (streamActivity.length === 0) return null;
   const running = streamActivity.filter((i) => !i.done && !i.failed).length;
@@ -277,7 +277,7 @@ function ActivityFeed() {
 
 /** Voice recognition failure card with recovery actions. */
 function VoiceErrorCard() {
-  const { voiceError, retryVoice, focusChatInput, chatBusy } = useJarvis();
+  const { voiceError, retryVoice, focusChatInput, chatBusy } = useMew();
   if (!voiceError) return null;
   return (
     <div className="mt-3 w-full rounded-lg border border-crimson/40 bg-crimson/10 px-4 py-3">
@@ -305,7 +305,7 @@ export function CommandCenter() {
     clearTranscript,
     voiceSupported,
     conversationMode,
-  } = useJarvis();
+  } = useMew();
 
   const [metrics, setMetrics] = useState<SystemMetrics | null>(null);
   const [latency, setLatency] = useState<number | null>(null);
@@ -431,7 +431,7 @@ export function CommandCenter() {
             <div ref={logRef} className="max-h-[300px] flex-1 space-y-2 overflow-y-auto pr-1">
               {transcript.length === 0 ? (
                 <HudEmpty>
-                  No voice traffic yet. Tap the mic or say “Jarvis” while listening.
+                  No voice traffic yet. Tap the mic or say “Mew” while listening.
                 </HudEmpty>
               ) : (
                 transcript.map((line) => (
@@ -443,12 +443,12 @@ export function CommandCenter() {
                       className={`font-mono text-[10px] uppercase tracking-widest ${
                         line.role === 'user'
                           ? 'text-accent'
-                          : line.role === 'jarvis'
+                          : line.role === 'mew'
                             ? 'text-gold'
                             : 'text-slate-500'
                       }`}
                     >
-                      {line.role === 'user' ? 'YOU' : line.role === 'jarvis' ? 'JARVIS' : 'SYS'}
+                      {line.role === 'user' ? 'YOU' : line.role === 'mew' ? 'MEW' : 'SYS'}
                     </span>
                     <span className="text-cyan-100/85">{line.text}</span>
                   </div>

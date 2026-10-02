@@ -2,16 +2,16 @@ import { useEffect, useState } from 'react';
 import { getHealth } from '../api';
 import type { Health } from '../api';
 import { HudButton, HudChip, HudError, HudPanel, HudSelect, HudToggle } from './hud';
-import { useJarvis } from '../jarvis/context';
-import { listVoices, pickBritishVoice } from '../voice/jarvisVoice';
-import type { VoiceLangSetting } from '../voice/jarvisVoice';
+import { useMew } from '../mew/context';
+import { listVoices, pickBritishVoice } from '../voice/mewVoice';
+import type { VoiceLangSetting } from '../voice/mewVoice';
 import { playSfx } from '../audio/sfx';
 import type { SfxName } from '../audio/sfx';
 
-const PITCH_KEY = 'jarvis.pitch';
-const RATE_KEY = 'jarvis.rate';
-const VOICE_URI_KEY = 'jarvis.voiceURI';
-const PROACTIVE_KEY = 'jarvis.proactiveVoice';
+const PITCH_KEY = 'mew.pitch';
+const RATE_KEY = 'mew.rate';
+const VOICE_URI_KEY = 'mew.voiceURI';
+const PROACTIVE_KEY = 'mew.proactiveVoice';
 
 const SFX_TESTS: { name: SfxName; label: string }[] = [
   { name: 'activation', label: 'Activation' },
@@ -60,7 +60,7 @@ export function VoiceTab() {
     setVoiceLang,
     volume,
     setVolume,
-  } = useJarvis();
+  } = useMew();
 
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [voiceURI, setVoiceURI] = useState<string>(() => {
@@ -149,10 +149,10 @@ export function VoiceTab() {
         {/* Persona */}
         <HudPanel title="Persona">
           <p className="font-mono text-lg font-bold tracking-[0.1em] text-accent glow">
-            J.A.R.V.I.S.
+            MEW
           </p>
           <p className="mt-1 text-sm text-cyan-100/80">
-            Just A Rather Very Intelligent System
+            Warm, direct, and a little playful
           </p>
           <p className="mt-2 font-mono text-xs uppercase tracking-[0.2em] text-gold/90">
             Addressing you as: sir
@@ -304,11 +304,11 @@ export function VoiceTab() {
             className="w-full"
             disabled={!voiceSupported}
           >
-            <option value="lenient">Lenient — any “jarvis”</option>
-            <option value="strict">Strict — phrase must start with “jarvis”</option>
+            <option value="lenient">Lenient — any “mew”</option>
+            <option value="strict">Strict — phrase must start with “mew”</option>
           </HudSelect>
           <p className="mt-2 text-xs text-cyan-200/50">
-            While sleeping, only the wake word activates J.A.R.V.I.S. Manual mic
+            While sleeping, only the wake word activates MEW Manual mic
             activation grants a 60-second awake window.
           </p>
         </HudPanel>

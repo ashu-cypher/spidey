@@ -340,7 +340,7 @@ async def test_hindi_reminder_e2e_run_stream():
 async def test_run_stream_direct_path_events():
     agent = SpideyAgent(RuleBasedProvider(), TOOL_REGISTRY)
     result, events, engine, run = await _collect(agent, "Hello Spidey.")
-    assert "sir" in result.lower()
+    assert "mew" in result.lower()
     types = [t for t, _ in events]
     assert types[0] == "state"
     assert events[0][1] == {"state": "thinking", "label": "Understanding request"}
@@ -419,7 +419,7 @@ async def test_chat_stream_endpoint_sse_contract():
     done = events[-1][1]
     assert done["run_id"]
     assert done["lang"] == "en"
-    assert "sir" in done["result"].lower()
+    assert "mew" in done["result"].lower()
 
 
 async def test_chat_stream_endpoint_hindi_lang():
