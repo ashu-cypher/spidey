@@ -57,6 +57,12 @@ _HIGHLY_DISTINCTIVE = {"mujhe", "baje", "chahiye", "kya"}
 # Sentence terminators, including the Devanagari danda.
 _SENTENCE_END = re.compile(r"[^.!?\u0964]+[.!?\u0964]+\s*|[^.!?\u0964]+$")
 
+# Initialisms like J.A.R.V.I.S. or U.S.A.: their inner periods are not
+# sentence ends. Without protection the splitter shreds "J.A.R.V.I.S."
+# into "J." "A." "R." … — and the voice summary becomes the nonsense
+# "At your service, sir. J.", which TTS would speak literally.
+_INITIALISM = re.compile(r"\b(?:[A-Z]\.){2,}")
+
 
 def detect_language(text: str, preferred: str = "auto") -> str:
     """Return 'en', 'hi', or 'hinglish' for ``text``.
@@ -93,8 +99,28 @@ def split_sentences(text: str) -> list[str]:
     The whitespace following a sentence stays with that chunk, so
     ``"".join(split_sentences(t))`` reassembles ``t`` exactly (this is what
     the streaming path relies on for delta reassembly).
+
+    Initialisms (``J.A.R.V.I.S.``, ``U.S.A.``) are shielded from splitting
+    first and restored afterwards, so exact reassembly still holds.
     """
-    return [c for c in _SENTENCE_END.findall(text or "") if c.strip()]
+    src = text or ""
+    spans: dict[str, str] = {}
+
+    def _protect(m: "re.Match[str]") -> str:
+        key = f"\ue000{len(spans)}\ue001"  # private-use: cannot collide
+        spans[key] = m.group(0)
+        return key
+
+    protected = _INITIALISM.sub(_protect, src)
+    chunks = [c for c in _SENTENCE_END.findall(protected) if c.strip()]
+    if not spans:
+        return chunks
+    restored = []
+    for chunk in chunks:
+        for key, val in spans.items():
+            chunk = chunk.replace(key, val)
+        restored.append(chunk)
+    return restored
 
 
 def make_voice_summary(text: str, lang: str = "en") -> str:

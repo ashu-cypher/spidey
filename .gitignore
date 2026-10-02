@@ -18,6 +18,10 @@ dist-ssr/
 # Environment & secrets — NEVER commit
 .env
 .env.*
+# Local dev databases (sqlite fallback) — NEVER commit
+*.db
+*.db-journal
+*.sqlite3
 !.env.example
 *.pem
 *.key

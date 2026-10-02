@@ -101,6 +101,21 @@ def test_voice_summary_hindi_danda():
     assert "तीसरा" not in summary
 
 
+def test_split_sentences_keeps_initialism_intact():
+    # "J.A.R.V.I.S." must not be shredded into "J." "A." … — TTS would
+    # speak the fragments literally.
+    text = "At your service, sir. J.A.R.V.I.S. online and at your disposal."
+    chunks = split_sentences(text)
+    assert "".join(chunks) == text  # exact reassembly still holds
+    assert chunks == [
+        "At your service, sir. ",
+        "J.A.R.V.I.S. online and at your disposal.",
+    ]
+    summary = make_voice_summary(text)
+    assert "J.A.R.V.I.S." in summary
+    assert not summary.rstrip().endswith("J.")
+
+
 # --- 3. Language detection ----------------------------------------------------
 
 
