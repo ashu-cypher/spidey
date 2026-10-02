@@ -155,7 +155,7 @@ export function VoiceTab() {
             Warm, direct, and a little playful
           </p>
           <p className="mt-2 font-mono text-xs uppercase tracking-[0.2em] text-gold/90">
-            Addressing you as: sir
+            Speaking to you directly — warm, direct, a little playful
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             <span className={`hud-pill ${voiceSupported ? 'hud-pill-on' : 'hud-pill-off'}`}>
@@ -278,7 +278,7 @@ export function VoiceTab() {
 
               <div>
                 <HudButton
-                  onClick={() => speak('Systems online, sir. All interfaces nominal.')}
+                  onClick={() => speak('Hey. Systems online — all interfaces nominal.')}
                   disabled={!ttsSupported}
                 >
                   Test voice

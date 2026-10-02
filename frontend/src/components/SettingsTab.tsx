@@ -2,6 +2,7 @@ import { Suspense, lazy, useState } from 'react';
 import type { ReactNode } from 'react';
 import { HudPanel, HudTitle } from './hud';
 import { MemoryPanel } from './MemoryPanel';
+import { ProviderPicker } from './ProviderPicker';
 import { VoiceTab } from './VoiceTab';
 
 const SystemTab = lazy(() =>
@@ -55,6 +56,8 @@ export function SettingsTab() {
       <HudPanel title="Voice & persona">
         <VoiceTab />
       </HudPanel>
+
+      <ProviderPicker />
 
       <HudPanel title="Memory management">
         <MemoryPanel />

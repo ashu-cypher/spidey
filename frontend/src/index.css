@@ -3,22 +3,23 @@
 @tailwind utilities;
 
 /* ------------------------------------------------------------------ */
-/* MEW — Stark HUD holographic command center theme           */
-/* System font stack only (offline-safe). HUD feel via tracking + case. */
+/* MEW — spider identity theme: near-black base, deep navy surfaces,   */
+/* controlled red accents (#e62429), electric blue highlights (#38e1ff). */
+/* System font stack only (offline-safe).                                */
 /* ------------------------------------------------------------------ */
 
 :root {
-  --hud-cyan: #00f0ff;
+  --hud-cyan: #38e1ff;
   --hud-gold: #f59e0b;
-  --hud-crimson: #ef4444;
-  --hud-carbon: #030712;
-  --hud-carbon-2: #050b14;
+  --hud-crimson: #e62429;
+  --hud-carbon: #060609;
+  --hud-carbon-2: #0a0f1e;
 }
 
 html,
 body {
   background: var(--hud-carbon);
-  color: #d7f9ff;
+  color: #e6edf5;
   font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
     'Helvetica Neue', Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -61,43 +62,58 @@ body {
 
 .hud-panel {
   position: relative;
-  border: 1px solid rgba(0, 240, 255, 0.16);
+  border: 1px solid rgba(56, 225, 255, 0.16);
   border-radius: 10px;
   background: linear-gradient(
     155deg,
-    rgba(0, 240, 255, 0.07) 0%,
-    rgba(0, 240, 255, 0.02) 35%,
+    rgba(56, 225, 255, 0.07) 0%,
+    rgba(56, 225, 255, 0.02) 35%,
     rgba(5, 11, 20, 0.6) 100%
   );
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   box-shadow:
-    0 0 28px rgba(0, 240, 255, 0.05),
-    inset 0 0 32px rgba(0, 240, 255, 0.03);
+    0 0 28px rgba(56, 225, 255, 0.05),
+    inset 0 0 32px rgba(56, 225, 255, 0.03);
 }
 
-/* Angled corner accents on panels */
+/* Blocky pixel-step corner accents on panels (minecraft-subtle) */
 .hud-panel::before,
 .hud-panel::after {
   content: '';
   position: absolute;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   pointer-events: none;
 }
 .hud-panel::before {
   top: -1px;
   left: -1px;
-  border-top: 2px solid rgba(0, 240, 255, 0.7);
-  border-left: 2px solid rgba(0, 240, 255, 0.7);
-  border-top-left-radius: 10px;
+  /* stepped corner: two blocky segments instead of an angled line */
+  border-top: 2px solid rgba(56, 225, 255, 0.7);
+  border-left: 2px solid rgba(56, 225, 255, 0.7);
+  clip-path: polygon(
+    0 0,
+    100% 0,
+    100% 4px,
+    4px 4px,
+    4px 100%,
+    0 100%
+  );
 }
 .hud-panel::after {
   bottom: -1px;
   right: -1px;
-  border-bottom: 2px solid rgba(0, 240, 255, 0.7);
-  border-right: 2px solid rgba(0, 240, 255, 0.7);
-  border-bottom-right-radius: 10px;
+  border-bottom: 2px solid rgba(56, 225, 255, 0.7);
+  border-right: 2px solid rgba(56, 225, 255, 0.7);
+  clip-path: polygon(
+    0 calc(100% - 4px),
+    calc(100% - 4px) calc(100% - 4px),
+    calc(100% - 4px) 0,
+    100% 0,
+    100% 100%,
+    0 100%
+  );
 }
 
 .hud-title {
@@ -106,7 +122,7 @@ body {
   letter-spacing: 0.32em;
   text-transform: uppercase;
   color: var(--hud-cyan);
-  text-shadow: 0 0 14px rgba(0, 240, 255, 0.55);
+  text-shadow: 0 0 14px rgba(56, 225, 255, 0.55);
 }
 
 .hud-subtitle {
@@ -123,8 +139,8 @@ body {
   letter-spacing: 0.18em;
   text-transform: uppercase;
   color: #a5f3fc;
-  background: rgba(0, 240, 255, 0.06);
-  border: 1px solid rgba(0, 240, 255, 0.35);
+  background: rgba(56, 225, 255, 0.06);
+  border: 1px solid rgba(56, 225, 255, 0.35);
   clip-path: polygon(
     10px 0,
     100% 0,
@@ -140,10 +156,10 @@ body {
   user-select: none;
 }
 .hud-btn:hover:not(:disabled) {
-  background: rgba(0, 240, 255, 0.16);
+  background: rgba(56, 225, 255, 0.16);
   color: #ecfeff;
-  border-color: rgba(0, 240, 255, 0.7);
-  box-shadow: 0 0 18px rgba(0, 240, 255, 0.25);
+  border-color: rgba(56, 225, 255, 0.7);
+  box-shadow: 0 0 18px rgba(56, 225, 255, 0.25);
 }
 .hud-btn:disabled {
   opacity: 0.35;
@@ -151,13 +167,13 @@ body {
 }
 
 .hud-btn-primary {
-  background: rgba(0, 240, 255, 0.22);
+  background: rgba(56, 225, 255, 0.22);
   color: #03161a;
   font-weight: 700;
-  border-color: rgba(0, 240, 255, 0.8);
+  border-color: rgba(56, 225, 255, 0.8);
 }
 .hud-btn-primary:hover:not(:disabled) {
-  background: rgba(0, 240, 255, 0.38);
+  background: rgba(56, 225, 255, 0.38);
   color: #000;
 }
 
@@ -186,7 +202,7 @@ body {
 
 .hud-input {
   background: rgba(3, 7, 18, 0.75);
-  border: 1px solid rgba(0, 240, 255, 0.25);
+  border: 1px solid rgba(56, 225, 255, 0.25);
   border-radius: 6px;
   color: #d7f9ff;
   padding: 0.55rem 0.9rem;
@@ -199,12 +215,12 @@ body {
   letter-spacing: 0.06em;
 }
 .hud-input:focus {
-  border-color: rgba(0, 240, 255, 0.75);
-  box-shadow: 0 0 14px rgba(0, 240, 255, 0.18), inset 0 0 12px rgba(0, 240, 255, 0.05);
+  border-color: rgba(56, 225, 255, 0.75);
+  box-shadow: 0 0 14px rgba(56, 225, 255, 0.18), inset 0 0 12px rgba(56, 225, 255, 0.05);
 }
 
 select.hud-input option {
-  background: #050b14;
+  background: #0a0f1e;
   color: #d7f9ff;
 }
 
@@ -213,17 +229,17 @@ select.hud-input option {
   font-size: 11px;
   letter-spacing: 0.1em;
   color: #a5f3fc;
-  background: rgba(0, 240, 255, 0.05);
-  border: 1px solid rgba(0, 240, 255, 0.28);
+  background: rgba(56, 225, 255, 0.05);
+  border: 1px solid rgba(56, 225, 255, 0.28);
   border-radius: 9999px;
   padding: 0.35rem 0.85rem;
   transition: background-color 0.15s ease, box-shadow 0.15s ease, color 0.15s ease;
   cursor: pointer;
 }
 .hud-chip:hover:not(:disabled) {
-  background: rgba(0, 240, 255, 0.16);
+  background: rgba(56, 225, 255, 0.16);
   color: #ecfeff;
-  box-shadow: 0 0 12px rgba(0, 240, 255, 0.3);
+  box-shadow: 0 0 12px rgba(56, 225, 255, 0.3);
 }
 .hud-chip:disabled {
   opacity: 0.35;
@@ -265,21 +281,21 @@ select.hud-input option {
 .hud-meter {
   height: 6px;
   border-radius: 9999px;
-  background: rgba(0, 240, 255, 0.08);
-  border: 1px solid rgba(0, 240, 255, 0.15);
+  background: rgba(56, 225, 255, 0.08);
+  border: 1px solid rgba(56, 225, 255, 0.15);
   overflow: hidden;
 }
 .hud-meter > div {
   height: 100%;
   border-radius: 9999px;
-  background: linear-gradient(90deg, rgba(0, 240, 255, 0.5), #00f0ff);
-  box-shadow: 0 0 10px rgba(0, 240, 255, 0.6);
+  background: linear-gradient(90deg, rgba(56, 225, 255, 0.5), #38e1ff);
+  box-shadow: 0 0 10px rgba(56, 225, 255, 0.6);
   transition: width 0.5s ease;
 }
 
 /* Text glow for headings */
 .glow {
-  text-shadow: 0 0 18px rgba(0, 240, 255, 0.5);
+  text-shadow: 0 0 18px rgba(56, 225, 255, 0.5);
 }
 .glow-gold {
   text-shadow: 0 0 18px rgba(245, 158, 11, 0.5);
@@ -292,7 +308,7 @@ input[type='range'].hud-range {
   width: 100%;
   height: 4px;
   border-radius: 9999px;
-  background: rgba(0, 240, 255, 0.18);
+  background: rgba(56, 225, 255, 0.18);
   outline: none;
 }
 input[type='range'].hud-range::-webkit-slider-thumb {
@@ -301,18 +317,18 @@ input[type='range'].hud-range::-webkit-slider-thumb {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #00f0ff;
+  background: #38e1ff;
   border: 2px solid #03161a;
-  box-shadow: 0 0 12px rgba(0, 240, 255, 0.8);
+  box-shadow: 0 0 12px rgba(56, 225, 255, 0.8);
   cursor: pointer;
 }
 input[type='range'].hud-range::-moz-range-thumb {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: #00f0ff;
+  background: #38e1ff;
   border: 2px solid #03161a;
-  box-shadow: 0 0 12px rgba(0, 240, 255, 0.8);
+  box-shadow: 0 0 12px rgba(56, 225, 255, 0.8);
   cursor: pointer;
 }
 
@@ -322,15 +338,15 @@ input[type='range'].hud-range::-moz-range-thumb {
   width: 44px;
   height: 22px;
   border-radius: 9999px;
-  border: 1px solid rgba(0, 240, 255, 0.4);
-  background: rgba(0, 240, 255, 0.06);
+  border: 1px solid rgba(56, 225, 255, 0.4);
+  background: rgba(56, 225, 255, 0.06);
   cursor: pointer;
   transition: background-color 0.2s ease;
   flex-shrink: 0;
 }
 .hud-toggle[data-on='true'] {
-  background: rgba(0, 240, 255, 0.28);
-  box-shadow: 0 0 12px rgba(0, 240, 255, 0.35);
+  background: rgba(56, 225, 255, 0.28);
+  box-shadow: 0 0 12px rgba(56, 225, 255, 0.35);
 }
 .hud-toggle::after {
   content: '';
@@ -341,7 +357,7 @@ input[type='range'].hud-range::-moz-range-thumb {
   height: 16px;
   border-radius: 50%;
   background: #67e8f9;
-  box-shadow: 0 0 8px rgba(0, 240, 255, 0.7);
+  box-shadow: 0 0 8px rgba(56, 225, 255, 0.7);
   transition: transform 0.2s ease;
 }
 .hud-toggle[data-on='true']::after {
@@ -404,7 +420,7 @@ input[type='range'].hud-range::-moz-range-thumb {
 /* Slim dark scrollbars */
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(0, 240, 255, 0.25) transparent;
+  scrollbar-color: rgba(56, 225, 255, 0.25) transparent;
 }
 *::-webkit-scrollbar {
   width: 8px;
@@ -414,11 +430,11 @@ input[type='range'].hud-range::-moz-range-thumb {
   background: transparent;
 }
 *::-webkit-scrollbar-thumb {
-  background: rgba(0, 240, 255, 0.22);
+  background: rgba(56, 225, 255, 0.22);
   border-radius: 9999px;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 240, 255, 0.4);
+  background: rgba(56, 225, 255, 0.4);
 }
 
 /* Memory-updated badge entrance */
@@ -449,4 +465,148 @@ input[type='range'].hud-range::-moz-range-thumb {
   *::after {
     scroll-behavior: auto !important;
   }
+}
+
+/* ------------------ MEW spider-identity additions ------------------ */
+
+/* Faint digital grid behind the main view (minecraft-subtle) */
+.mew-grid-bg {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background-image:
+    linear-gradient(rgba(56, 225, 255, 0.028) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 225, 255, 0.028) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(ellipse at 50% 30%, black 30%, transparent 90%);
+  -webkit-mask-image: radial-gradient(ellipse at 50% 30%, black 30%, transparent 90%);
+}
+
+/* Thin geometric divider with a centered node */
+.mew-web-divider {
+  position: relative;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(56, 225, 255, 0.35) 30%,
+    rgba(56, 225, 255, 0.35) 70%,
+    transparent
+  );
+}
+.mew-web-divider::after {
+  content: '';
+  position: absolute;
+  top: -2px;
+  left: 50%;
+  width: 5px;
+  height: 5px;
+  transform: translateX(-50%) rotate(45deg);
+  background: rgba(56, 225, 255, 0.8);
+  box-shadow: 0 0 8px rgba(56, 225, 255, 0.6);
+}
+
+/* Subtle state caption under the avatar (state-machine readout) */
+.mew-state-caption {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 10px;
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: rgba(125, 233, 255, 0.55);
+  text-align: center;
+}
+
+/* Compact live activity line: 🕷 SPIDER SENSE — <label> */
+.mew-activity {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(125, 233, 255, 0.6);
+}
+.mew-activity .mew-activity-label {
+  color: rgba(230, 237, 245, 0.8);
+  letter-spacing: 0.06em;
+  text-transform: none;
+}
+
+/* MEW message bubble: comm-interface with web-line connector accent */
+.mew-msg-mew {
+  position: relative;
+  border: 1px solid rgba(56, 225, 255, 0.16);
+  border-radius: 14px;
+  border-top-left-radius: 4px;
+  background: linear-gradient(
+    160deg,
+    rgba(56, 225, 255, 0.06) 0%,
+    rgba(10, 15, 30, 0.55) 60%
+  );
+  box-shadow: 0 0 20px rgba(56, 225, 255, 0.05);
+}
+.mew-msg-mew::before {
+  /* web-line connector: short vertical strand with a node */
+  content: '';
+  position: absolute;
+  left: -7px;
+  top: 18px;
+  width: 7px;
+  height: 1px;
+  background: rgba(56, 225, 255, 0.5);
+}
+.mew-msg-mew::after {
+  content: '';
+  position: absolute;
+  left: -9px;
+  top: 16px;
+  width: 5px;
+  height: 5px;
+  transform: rotate(45deg);
+  background: rgba(56, 225, 255, 0.7);
+  box-shadow: 0 0 6px rgba(56, 225, 255, 0.5);
+}
+
+/* User message: clean compact holographic */
+.mew-msg-user {
+  border: 1px solid rgba(230, 36, 41, 0.22);
+  border-radius: 14px;
+  border-top-right-radius: 4px;
+  background: rgba(230, 36, 41, 0.06);
+}
+
+/* Avatar stage: hidden on small screens in favor of the compact badge */
+@media (max-width: 639px) {
+  .mew-avatar-stage {
+    display: none;
+  }
+}
+@media (min-width: 640px) {
+  .mew-avatar-badge {
+    display: none;
+  }
+}
+
+/* Header status readout */
+.mew-core-status {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  line-height: 1.9;
+  color: rgba(125, 233, 255, 0.6);
+  text-align: right;
+  white-space: nowrap;
+}
+.mew-core-status .ok {
+  color: #6ee7b7;
+}
+.mew-core-status .bad {
+  color: #ff8a8e;
+}
+.mew-core-status .val {
+  color: rgba(230, 237, 245, 0.85);
 }

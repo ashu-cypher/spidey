@@ -4,13 +4,13 @@ export default {
   theme: {
     extend: {
       colors: {
-        void: '#030712',
-        carbon: '#050B14',
-        panel: '#0A1220',
-        accent: '#00f0ff',
+        void: '#060609',
+        carbon: '#060609',
+        panel: '#0a0f1e',
+        accent: '#38e1ff',
         gold: '#f59e0b',
-        crimson: '#ef4444',
-        hud: '#67e8f9',
+        crimson: '#e62429',
+        hud: '#7de9ff',
       },
     },
   },

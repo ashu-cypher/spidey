@@ -59,6 +59,18 @@ export type StreamPhase =
   | 'done'
   | 'error';
 
+/** Fine-grained tool phase while streamPhase === 'processing'. */
+export type DetailPhase = 'processing' | 'searching' | 'analyzing';
+
+/** True unless the user disabled proactive voice (localStorage mew.proactiveVoice). */
+export function proactiveVoiceEnabled(): boolean {
+  try {
+    return localStorage.getItem('mew.proactiveVoice') !== '0';
+  } catch {
+    return true;
+  }
+}
+
 export interface StreamActivityItem {
   id: number;
   label: string;
@@ -100,6 +112,8 @@ interface MewContextValue {
   setSfxEnabledState: (v: boolean) => void;
   /** Speak via the voice engine + reactor flare + transcript log. */
   speak: (text: string) => void;
+  /** speak() gated on the user's proactive-voice preference. */
+  proactiveSay: (text: string) => void;
   /** Registered by the chat UI; lets chips/voice send messages. */
   sendChat: (text: string, opts?: SendChatOpts) => void;
   registerChatSend: (fn: ((text: string, opts?: SendChatOpts) => void) | null) => void;
@@ -135,6 +149,9 @@ interface MewContextValue {
   /** Live phase of the streaming chat request (real SSE events). */
   streamPhase: StreamPhase;
   setStreamPhase: (p: StreamPhase) => void;
+  /** Fine-grained tool phase while streamPhase === 'processing'. */
+  detailPhase: DetailPhase;
+  setDetailPhase: (p: DetailPhase) => void;
   /** Real stream events for the activity feed; cleared on each new request. */
   streamActivity: StreamActivityItem[];
   pushStreamActivity: (label: string) => void;
@@ -223,6 +240,15 @@ export function MewProvider({ children }: { children: ReactNode }) {
   const [voiceLang, setVoiceLangState] = useState<VoiceLangSetting>(() => readStoredVoiceLang());
   const [volume, setVolumeState] = useState<number>(() => readStoredVolume());
   const [streamPhase, setStreamPhase] = useState<StreamPhase>('idle');
+  const [detailPhase, setDetailPhaseState] = useState<DetailPhase>('processing');
+  const setDetailPhase = useCallback((p: DetailPhase) => {
+    setDetailPhaseState(p);
+  }, []);
+
+  // The fine-grained tool phase resets whenever the stream leaves processing.
+  useEffect(() => {
+    if (streamPhase !== 'processing') setDetailPhaseState('processing');
+  }, [streamPhase]);
   const [streamActivity, setStreamActivity] = useState<StreamActivityItem[]>([]);
   const [conversationMode, setConversationMode] = useState(false);
 
@@ -402,7 +428,7 @@ export function MewProvider({ children }: { children: ReactNode }) {
   // (then IDLE), error → ERROR, awaiting_confirmation → ATTENTION.
   const baseMode: ReactorMode = useMemo(() => {
     if (engineState === 'speaking') return 'speaking';
-    if (streamPhase === 'processing') return 'processing';
+    if (streamPhase === 'processing') return detailPhase;
     if (streamPhase === 'awaiting') return 'attention';
     if (streamPhase === 'speaking') return 'speaking';
     if (streamPhase === 'thinking') return 'thinking';
@@ -416,7 +442,7 @@ export function MewProvider({ children }: { children: ReactNode }) {
       return 'listening';
     }
     return 'idle';
-  }, [engineState, streamPhase, activeSteps, chatBusy]);
+  }, [engineState, streamPhase, detailPhase, activeSteps, chatBusy]);
 
   useEffect(() => {
     baseModeRef.current = baseMode;
@@ -445,6 +471,11 @@ export function MewProvider({ children }: { children: ReactNode }) {
     },
     onVoiceStateChange: (state) => {
       setEngineState(state);
+      if (state === 'listening' || state === 'recognizing') {
+        // Real event: recognition start → spider-sense flare, then the
+        // state machine settles into LISTENING.
+        flashMode('spidersense', 1200);
+      }
       if (state === 'error') {
         setVoiceError(voice.getVoiceError());
       } else if (state !== 'speaking') {
@@ -484,6 +515,15 @@ export function MewProvider({ children }: { children: ReactNode }) {
       if (!voice.ttsSupported) flashMode('speaking', 1200);
     },
     [voice, logTranscript, flashMode],
+  );
+
+  const proactiveSay = useCallback(
+    (text: string) => {
+      if (!proactiveVoiceEnabled()) return;
+      logTranscript('mew', text);
+      voice.speak(text);
+    },
+    [voice, logTranscript],
   );
 
   const stopSpeaking = useCallback(() => {
@@ -548,8 +588,9 @@ export function MewProvider({ children }: { children: ReactNode }) {
     conversationModeRef.current = true;
     setConversationMode(true);
     playSfx('activation');
-    logTranscript('system', 'Conversation mode on — talk to MEW, sir.');
-  }, [voice, voiceSupported, logTranscript]);
+    logTranscript('system', "Conversation mode on — I'm listening.");
+    proactiveSay("Hey. I'm listening.");
+  }, [voice, voiceSupported, logTranscript, proactiveSay]);
 
   /**
    * End conversation: stop recognition, cancel TTS + queue, abort the
@@ -585,11 +626,11 @@ export function MewProvider({ children }: { children: ReactNode }) {
       const parts: string[] = [];
       if (b.pending_tasks > 0) {
         parts.push(
-          `You have ${b.pending_tasks} pending task${b.pending_tasks === 1 ? '' : 's'} today, sir.`,
+          `You have ${b.pending_tasks} pending task${b.pending_tasks === 1 ? '' : 's'} today.`,
         );
       }
       const due = b.due_soon[0];
-      if (due) parts.push(`Sir, you have a reminder due soon: ${due.text}.`);
+      if (due) parts.push(`Reminder due soon: ${due.text}.`);
       if (parts.length > 0) {
         const text = parts.join(' ');
         logTranscript('mew', text);
@@ -628,6 +669,7 @@ export function MewProvider({ children }: { children: ReactNode }) {
       sfxEnabled,
       setSfxEnabledState,
       speak,
+      proactiveSay,
       sendChat,
       registerChatSend,
       chatBusy,
@@ -652,6 +694,8 @@ export function MewProvider({ children }: { children: ReactNode }) {
       setVolume,
       streamPhase,
       setStreamPhase,
+      detailPhase,
+      setDetailPhase,
       streamActivity,
       pushStreamActivity,
       markStreamActivityDone,
@@ -690,6 +734,7 @@ export function MewProvider({ children }: { children: ReactNode }) {
       sfxEnabled,
       setSfxEnabledState,
       speak,
+      proactiveSay,
       sendChat,
       registerChatSend,
       chatBusy,
@@ -709,6 +754,8 @@ export function MewProvider({ children }: { children: ReactNode }) {
       volume,
       setVolume,
       streamPhase,
+      detailPhase,
+      setDetailPhase,
       streamActivity,
       pushStreamActivity,
       markStreamActivityDone,

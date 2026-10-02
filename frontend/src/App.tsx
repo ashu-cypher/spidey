@@ -1,6 +1,8 @@
 import { Suspense, lazy, useEffect, useRef, useState } from 'react';
-import { MewProvider, useMew, playSfx } from './mew/context';
+import { MewProvider, useMew, playSfx, proactiveVoiceEnabled } from './mew/context';
 import { HexGridBackground, HudPanel } from './components/hud';
+import { MewEmblem } from './components/MewEmblem';
+import { CoreStatus } from './components/CoreStatus';
 import { MewView } from './components/MewView';
 import { ActivityPanel } from './components/ActivityPanel';
 import { LibraryTab } from './components/LibraryTab';
@@ -27,9 +29,12 @@ const TABS: { id: TabId; label: string }[] = [
 function TabFallback() {
   return (
     <HudPanel>
-      <p className="font-mono text-xs uppercase tracking-[0.25em] text-cyan-200/40 hud-blink">
-        Loading module…
-      </p>
+      <div className="flex items-center gap-3">
+        <MewEmblem size={28} />
+        <p className="font-mono text-xs uppercase tracking-[0.25em] text-cyan-200/40 hud-blink">
+          Loading module…
+        </p>
+      </div>
     </HudPanel>
   );
 }
@@ -62,13 +67,7 @@ function useGlobalEvents() {
           const text = `Reminder due: ${data.reminder.title}`;
           logTranscript('system', text);
           pushNotice(text);
-          let proactive = true;
-          try {
-            proactive = localStorage.getItem('mew.proactiveVoice') !== '0';
-          } catch {
-            /* default on */
-          }
-          if (proactive) speak(`Sir, reminder: ${data.reminder.title}`);
+          if (proactiveVoiceEnabled()) speak(`Reminder: ${data.reminder.title}`);
         } catch {
           /* malformed event — ignore */
         }
@@ -134,6 +133,7 @@ function Shell() {
   return (
     <div className="relative min-h-screen">
       <HexGridBackground />
+      <div className="mew-grid-bg" aria-hidden="true" />
       <div className="hud-scanlines" aria-hidden="true" />
       <div className="hud-vignette" aria-hidden="true" />
       {/* slow sweeping scan bar */}
@@ -142,37 +142,39 @@ function Shell() {
       </div>
 
       <div className="relative z-10 mx-auto max-w-7xl px-4 py-6">
-        <header className="mb-6 flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="glow font-mono text-3xl font-bold uppercase tracking-[0.3em] text-white">
-              MEW
-            </h1>
-            <p className="mt-1 font-mono text-[11px] uppercase tracking-[0.25em] text-cyan-200/50">
-              Warm, direct, and a little playful
-            </p>
-          </div>
+        <header className="mb-6 flex flex-wrap items-start justify-between gap-4">
           <div className="flex items-center gap-3">
-            <span className="hud-pill hud-pill-on">
-              <span className="inline-block h-2 w-2 rounded-full bg-emerald-400 hud-blink" />
-              Systems nominal
-            </span>
-            <HudClock />
-            <button
-              type="button"
-              onClick={() => {
-                playSfx('blip');
-                setActiveTab('settings');
-              }}
-              title="Settings"
-              aria-label="Open settings"
-              className={`flex h-9 w-9 items-center justify-center rounded-lg border text-base transition-all ${
-                tab === 'settings'
-                  ? 'border-accent/70 bg-accent/15 text-accent'
-                  : 'border-accent/25 bg-carbon/60 text-cyan-200/60 hover:border-accent/50 hover:text-accent'
-              }`}
-            >
-              ⚙
-            </button>
+            <MewEmblem size={40} />
+            <div>
+              <h1 className="glow font-mono text-3xl font-bold uppercase tracking-[0.3em] text-white">
+                MEW
+              </h1>
+              <p className="mt-1 font-mono text-[11px] uppercase tracking-[0.25em] text-cyan-200/50">
+                Your personal AI
+              </p>
+            </div>
+          </div>
+          <div className="flex items-start gap-4">
+            <CoreStatus />
+            <div className="flex items-center gap-3 pt-1">
+              <HudClock />
+              <button
+                type="button"
+                onClick={() => {
+                  playSfx('blip');
+                  setActiveTab('settings');
+                }}
+                title="Settings"
+                aria-label="Open settings"
+                className={`flex h-9 w-9 items-center justify-center rounded-lg border text-base transition-all ${
+                  tab === 'settings'
+                    ? 'border-accent/70 bg-accent/15 text-accent'
+                    : 'border-accent/25 bg-carbon/60 text-cyan-200/60 hover:border-accent/50 hover:text-accent'
+                }`}
+              >
+                ⚙
+              </button>
+            </div>
           </div>
         </header>
 
@@ -222,7 +224,7 @@ function Shell() {
         </main>
 
         <footer className="mt-8 text-center font-mono text-[11px] uppercase tracking-[0.3em] text-cyan-200/30">
-          MEW · online
+          MEW · personal AI
         </footer>
       </div>
     </div>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   getWorkflow,
   streamChat,
@@ -14,14 +14,17 @@ import type {
   VoiceLangSetting,
 } from '../api';
 import { StreamSpeechTracker } from '../chat/streamSpeech';
+import { unlockAudio } from '../audio/sfx';
 import { ArcReactor } from './ArcReactor';
+import type { ReactorMode } from './ArcReactor';
 import { Markdown } from './Markdown';
+import { MewEmblem } from './MewEmblem';
 import { UniversalInput } from './UniversalInput';
 import { QuickActions } from './QuickActions';
 import { StatusPanel } from './StatusPanel';
 import { HudButton, HudChip } from './hud';
-import { useMew } from '../mew/context';
-import type { SendChatOpts } from '../mew/context';
+import { useMew, proactiveVoiceEnabled } from '../mew/context';
+import type { DetailPhase, SendChatOpts } from '../mew/context';
 import type { VoiceState } from '../voice/mewVoice';
 
 interface ChatMessage {
@@ -49,6 +52,8 @@ interface SendOpts {
 
 let messageId = 0;
 const CONVERSATION_KEY = 'mew.conversationId';
+/** Module-level: the first-gesture greeting fires exactly once per session. */
+let greetedThisSession = false;
 
 /** Stable conversation id per conversation, persisted in localStorage. */
 function loadConversationId(): string {
@@ -85,6 +90,72 @@ function ttsHintLang(
   return /[\u0900-\u097F]/.test(message) ? 'hi' : null;
 }
 
+/** Human label for the avatar state caption (the conversation state machine). */
+function modeCaption(mode: ReactorMode): string {
+  switch (mode) {
+    case 'listening':
+      return 'Listening';
+    case 'thinking':
+      return 'Thinking';
+    case 'searching':
+      return 'Searching';
+    case 'analyzing':
+      return 'Analyzing';
+    case 'processing':
+      return 'Using tool';
+    case 'speaking':
+      return 'Speaking';
+    case 'success':
+      return 'Done';
+    case 'error':
+      return 'Error';
+    case 'attention':
+      return 'Awake';
+    case 'spidersense':
+      return 'Spider sense';
+    case 'alert':
+      return 'Alert';
+    default:
+      return 'Standby';
+  }
+}
+
+/** Map a real tool name to the fine-grained avatar phase (never faked). */
+function toolPhaseFor(tool: string): DetailPhase {
+  const t = tool.toLowerCase();
+  if (/search|web|browse|fetch|http|lookup|query/.test(t)) return 'searching';
+  if (/analy|resume|document|doc|read|inspect|review|image|vision|attachment/.test(t))
+    return 'analyzing';
+  return 'processing';
+}
+
+/** Faint SVG web pattern behind the avatar: radial lines + concentric arcs. */
+function WebBackdrop() {
+  const spokes = useMemo(() => {
+    const arr: { x2: number; y2: number }[] = [];
+    for (let i = 0; i < 12; i += 1) {
+      const a = (i / 12) * Math.PI * 2;
+      arr.push({ x2: 160 + Math.cos(a) * 155, y2: 160 + Math.sin(a) * 155 });
+    }
+    return arr;
+  }, []);
+  return (
+    <svg
+      className="pointer-events-none absolute inset-0 h-full w-full"
+      viewBox="0 0 320 320"
+      aria-hidden="true"
+    >
+      <g stroke="#38e1ff" strokeWidth="1" opacity="0.055">
+        {spokes.map((s, i) => (
+          <line key={i} x1="160" y1="160" x2={s.x2} y2={s.y2} />
+        ))}
+        {[52, 96, 140].map((r) => (
+          <circle key={r} cx="160" cy="160" r={r} fill="none" />
+        ))}
+      </g>
+    </svg>
+  );
+}
 /** Friendly label for a stream `state` event (prefers the backend's label). */
 function stateLabel(state: string, data: Record<string, unknown>): string {
   if (typeof data.label === 'string' && data.label.trim()) {
@@ -286,7 +357,11 @@ interface MessageBubbleProps {
   onRegenerate: () => void;
 }
 
-function MessageBubble({ message, isLastAssistant, onRegenerate }: MessageBubbleProps) {
+const MessageBubble = memo(function MessageBubble({
+  message,
+  isLastAssistant,
+  onRegenerate,
+}: MessageBubbleProps) {
   if (message.role === 'system') {
     return (
       <div className="flex justify-center">
@@ -300,11 +375,16 @@ function MessageBubble({ message, isLastAssistant, onRegenerate }: MessageBubble
   const isUser = message.role === 'user';
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+      {!isUser && (
+        <div className="mr-1.5 mt-1 shrink-0" aria-hidden="true">
+          <MewEmblem size={20} />
+        </div>
+      )}
       <div
-        className={`max-w-[88%] rounded-2xl px-4 py-2.5 md:max-w-[82%] ${
+        className={`max-w-[88%] px-4 py-2.5 md:max-w-[82%] ${
           isUser
-            ? 'rounded-br-md border border-accent/40 bg-accent/10 text-cyan-100 shadow-[0_0_16px_rgba(0,240,255,0.12)]'
-            : 'rounded-bl-md border border-accent/15 bg-carbon/60 text-cyan-100/90'
+            ? 'mew-msg-user text-cyan-100 shadow-[0_0_16px_rgba(230,36,41,0.10)]'
+            : 'mew-msg-mew text-cyan-100/90'
         }`}
       >
         {isUser && message.attachments && message.attachments.length > 0 && (
@@ -317,7 +397,7 @@ function MessageBubble({ message, isLastAssistant, onRegenerate }: MessageBubble
         )}
         {!isUser && message.toolLines && message.toolLines.length > 0 && (
           <p className="mt-1.5 border-t border-accent/10 pt-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-cyan-200/40">
-            ⚙ {message.toolLines.join(' · ')}
+            🕷 SPIDER SENSE — {message.toolLines.join(' · ')}
           </p>
         )}
         {!isUser && message.memoryUpdated && (
@@ -333,7 +413,33 @@ function MessageBubble({ message, isLastAssistant, onRegenerate }: MessageBubble
       </div>
     </div>
   );
+});
+
+interface MessageListProps {
+  messages: ChatMessage[];
+  lastAssistantId: number | undefined;
+  onRegenerate: () => void;
 }
+
+/** Memoized so typing in the input doesn't re-render every bubble. */
+const MessageList = memo(function MessageList({
+  messages,
+  lastAssistantId,
+  onRegenerate,
+}: MessageListProps) {
+  return (
+    <>
+      {messages.map((m) => (
+        <MessageBubble
+          key={m.id}
+          message={m}
+          isLastAssistant={m.id === lastAssistantId}
+          onRegenerate={onRegenerate}
+        />
+      ))}
+    </>
+  );
+});
 
 export function MewView() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -356,6 +462,9 @@ export function MewView() {
     voiceLang,
     conversationMode,
     setStreamPhase,
+    setDetailPhase,
+    flashMode,
+    proactiveSay,
     pushStreamActivity,
     markStreamActivityDone,
     markStreamActivityError,
@@ -383,6 +492,13 @@ export function MewView() {
   const activityRef = useRef(streamActivity);
   activityRef.current = streamActivity;
   const sawMemoryUpdateRef = useRef(false);
+  // Long-op narration: one calm line per request if a tool phase runs >3 s.
+  const toolStartAtRef = useRef(0);
+  const longOpTimerRef = useRef<number | null>(null);
+  const narratedLongOpRef = useRef(false);
+  // Tool-completion narration: count + whether an analysis-type tool ran.
+  const toolsUsedRef = useRef(0);
+  const sawAnalysisRef = useRef(false);
   // messagesRef mirrors `messages` so streaming updates can target an id
   // without stale closures.
   const messagesRef = useRef<ChatMessage[]>([]);
@@ -436,6 +552,10 @@ export function MewView() {
       window.clearTimeout(phaseTimer.current);
       phaseTimer.current = null;
     }
+    if (longOpTimerRef.current !== null) {
+      window.clearTimeout(longOpTimerRef.current);
+      longOpTimerRef.current = null;
+    }
     const c = abortRef.current;
     abortRef.current = null;
     try {
@@ -448,6 +568,27 @@ export function MewView() {
     setChatBusy(false);
     setStreamPhase('idle');
   }, [registerStreamAbort, setChatBusy, setStreamPhase]);
+
+  /** MEW initiates: first user gesture (click/keypress = audio unlock). */
+  useEffect(() => {
+    if (greetedThisSession) return;
+    const greet = () => {
+      if (greetedThisSession) return;
+      greetedThisSession = true;
+      unlockAudio();
+      const text = "Hey, I'm MEW. What are we working on today?";
+      pushMessage({ role: 'assistant', text });
+      if (proactiveVoiceEnabled()) proactiveSay(text);
+      window.removeEventListener('pointerdown', greet);
+      window.removeEventListener('keydown', greet);
+    };
+    window.addEventListener('pointerdown', greet);
+    window.addEventListener('keydown', greet);
+    return () => {
+      window.removeEventListener('pointerdown', greet);
+      window.removeEventListener('keydown', greet);
+    };
+  }, [pushMessage, proactiveSay]);
 
   const addFiles = useCallback((files: File[]) => {
     if (files.length === 0) return;
@@ -492,6 +633,14 @@ export function MewView() {
     setConfirm(null);
     confirmShownRef.current = false;
     sawMemoryUpdateRef.current = false;
+    toolsUsedRef.current = 0;
+    sawAnalysisRef.current = false;
+    narratedLongOpRef.current = false;
+    toolStartAtRef.current = 0;
+    if (longOpTimerRef.current !== null) {
+      window.clearTimeout(longOpTimerRef.current);
+      longOpTimerRef.current = null;
+    }
     clearStreamActivity();
     setStreamPhase('thinking');
     setPending([]);
@@ -506,6 +655,10 @@ export function MewView() {
           message || undefined,
         );
         attached.push(a);
+        // Real event: attach complete → spider-sense flare + narration.
+        flashMode('spidersense', 1400);
+        setDetailPhase('analyzing');
+        proactiveSay('Got it — analyzing now.');
         pushMessage({
           role: 'system',
           text: `Attached ${a.filename} — MEW can now answer questions about it.`,
@@ -574,7 +727,7 @@ export function MewView() {
       setStreamPhase('error');
       schedulePhaseIdle(2200);
       setFailure({ kind, title, detail });
-      if (autoSpeak) voice.speak('Sorry sir, something went wrong.');
+      if (autoSpeak) voice.speak('Sorry — something went wrong.');
     };
 
     const onEvent = (type: StreamEventType, data: Record<string, unknown>) => {
@@ -589,10 +742,35 @@ export function MewView() {
               setStreamPhase('thinking');
               pushStreamActivity(label);
               break;
-            case 'tool_start':
+            case 'tool_start': {
               setStreamPhase('processing');
+              const tool =
+                typeof data.tool === 'string' && data.tool ? data.tool : 'tool';
+              const phase = toolPhaseFor(tool);
+              setDetailPhase(phase);
+              if (phase === 'analyzing') sawAnalysisRef.current = true;
+              toolsUsedRef.current += 1;
+              // Real event: tool_start → spider-sense flare, then the state
+              // machine settles into SEARCHING/ANALYZING/USING TOOL.
+              flashMode('spidersense', 1400);
               pushStreamActivity(label);
+              // Long op: one calm narration line if this drags past 3 s.
+              toolStartAtRef.current = Date.now();
+              if (longOpTimerRef.current !== null) {
+                window.clearTimeout(longOpTimerRef.current);
+              }
+              longOpTimerRef.current = window.setTimeout(() => {
+                longOpTimerRef.current = null;
+                if (
+                  sendSeq.current === seq &&
+                  !narratedLongOpRef.current
+                ) {
+                  narratedLongOpRef.current = true;
+                  proactiveSay("I'm analyzing the document now.");
+                }
+              }, 3000);
               break;
+            }
             case 'tool_complete':
               setStreamPhase('thinking');
               pushStreamActivity(label);
@@ -653,7 +831,20 @@ export function MewView() {
               typeof data.lang === 'string' ? data.lang : null;
             tracker.flush();
           }
+          if (longOpTimerRef.current !== null) {
+            window.clearTimeout(longOpTimerRef.current);
+            longOpTimerRef.current = null;
+          }
           markStreamActivityDone();
+          // Tool completion: one short spoken confirmation (typed chat only;
+          // voice-originated replies already speak the full response).
+          if (toolsUsedRef.current > 0 && !autoSpeak) {
+            proactiveSay(
+              sawAnalysisRef.current
+                ? 'Done — found a few things we should improve.'
+                : 'Done.',
+            );
+          }
           if (sawMemoryUpdateRef.current) {
             const runId =
               typeof data.run_id === 'string' ? data.run_id : '';
@@ -676,7 +867,7 @@ export function MewView() {
           const message =
             typeof data.message === 'string' && data.message
               ? data.message
-              : 'Something went wrong on my end, sir.';
+              : 'Something went wrong on my end.';
           failStream('run', 'Something went wrong.', message);
           break;
         }
@@ -717,9 +908,9 @@ export function MewView() {
     }
   }
 
-  function retryLast() {
-    if (lastSentRef.current) void send(lastSentRef.current);
-  }
+  const retryLast = useCallback(() => {
+    if (lastSentRef.current) void sendRef.current(lastSentRef.current);
+  }, []);
 
   function newConversation() {
     // Close any live stream before resetting; rotate the conversation id so
@@ -848,14 +1039,21 @@ export function MewView() {
         </div>
       )}
 
-      {/* Reactor — smoothly shrinks once the conversation starts. */}
+      {/* Compact badge on small screens (avatar collapses). */}
+      <div className="mew-avatar-badge mb-2 flex items-center justify-center gap-2">
+        <MewEmblem size={26} />
+        <span className="mew-state-caption">{modeCaption(reactorMode)}</span>
+      </div>
+
+      {/* Spider core — smoothly shrinks once the conversation starts. */}
       <div
-        className="flex justify-center overflow-hidden transition-[height] duration-500 ease-in-out"
+        className="mew-avatar-stage relative flex justify-center overflow-hidden transition-[height] duration-500 ease-in-out"
         style={{ height: chatting ? 124 : 320 }}
         aria-hidden={chatting}
       >
+        <WebBackdrop />
         <div
-          className="transition-transform duration-500 ease-in-out"
+          className="relative transition-transform duration-500 ease-in-out"
           style={{
             transform: `scale(${chatting ? 0.375 : 1})`,
             transformOrigin: 'top center',
@@ -867,6 +1065,22 @@ export function MewView() {
             <ArcReactor mode={reactorMode} spectrum={spectrumRef} size={320} />
           </div>
         </div>
+      </div>
+
+      {/* State-machine caption + live spider-sense activity visualization. */}
+      <div className="mb-1 hidden sm:block">
+        <p className="mew-state-caption" aria-live="polite">
+          {modeCaption(reactorMode)}
+        </p>
+        {streamActivity.length > 0 && (
+          <div className="mew-activity mt-1.5">
+            <span aria-hidden="true">🕷</span>
+            <span>Spider sense</span>
+            <span className="mew-activity-label">
+              — {streamActivity[streamActivity.length - 1].label}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Notices (reminders, protocols, proactive briefing). */}
@@ -924,14 +1138,11 @@ export function MewView() {
           onScroll={onScroll}
           className="mb-4 max-h-[52vh] space-y-3 overflow-y-auto pr-1"
         >
-          {messages.map((m) => (
-            <MessageBubble
-              key={m.id}
-              message={m}
-              isLastAssistant={m.id === lastAssistantId}
-              onRegenerate={retryLast}
-            />
-          ))}
+          <MessageList
+            messages={messages}
+            lastAssistantId={lastAssistantId}
+            onRegenerate={retryLast}
+          />
           {busy && (
             <div className="flex justify-start">
               <div className="hud-blink rounded-lg border border-accent/20 bg-accent/5 px-4 py-2 font-mono text-xs uppercase tracking-[0.25em] text-accent">
@@ -979,7 +1190,7 @@ export function MewView() {
       <UniversalInput
         value={input}
         onChange={setInput}
-        onSend={() => void send(input)}
+        onSend={(text: string) => void send(text)}
         pending={pending}
         onFiles={addFiles}
         onRemovePending={(i) =>

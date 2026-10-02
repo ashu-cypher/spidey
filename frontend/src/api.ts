@@ -406,6 +406,47 @@ export async function getHealth(): Promise<Health> {
   return json(res);
 }
 
+// --- System status + provider (MEW spider-identity contract) ---------------
+//
+// GET /api/system/status → { provider, model, online, memory, voice, rag }
+// GET /api/system/provider → { provider, providers } ; PUT → { provider, providers }
+// These endpoints are provided by the backend; every caller must handle
+// fetch failure (unreachable backend) with an honest OFFLINE state, never
+// a faked "online".
+
+export interface SystemStatusInfo {
+  provider: string;
+  model: string;
+  online: boolean;
+  memory: string;
+  voice: string;
+  rag: string;
+}
+
+export async function getSystemStatus(): Promise<SystemStatusInfo> {
+  const res = await fetch('/api/system/status');
+  return json(res);
+}
+
+export interface ProviderInfo {
+  provider: string;
+  providers: string[];
+}
+
+export async function getSystemProvider(): Promise<ProviderInfo> {
+  const res = await fetch('/api/system/provider');
+  return json(res);
+}
+
+export async function putSystemProvider(provider: string): Promise<ProviderInfo> {
+  const res = await fetch('/api/system/provider', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider }),
+  });
+  return json(res);
+}
+
 // --- Knowledge base (Phase 3) ----------------------------------------------
 
 export interface KnowledgeDocument {

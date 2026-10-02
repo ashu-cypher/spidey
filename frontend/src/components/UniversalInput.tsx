@@ -1,11 +1,13 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { useMew } from '../mew/context';
 import type { VoiceState } from '../voice/mewVoice';
 
 interface Props {
   value: string;
   onChange: (v: string) => void;
-  onSend: () => void;
+  /** Receives the flushed draft text (debounce-safe). */
+  onSend: (text: string) => void;
   pending: File[];
   onFiles: (files: File[]) => void;
   onRemovePending: (index: number) => void;
@@ -14,8 +16,79 @@ interface Props {
   disabled?: boolean;
 }
 
+/** Debounce for the draft mirror — parent re-renders skip the chat list. */
+const DRAFT_DEBOUNCE_MS = 140;
+
+// ---------------------------------------------------------------------------
+// Pixel-style micro-icons (crisp blocky glyphs, minecraft-subtle).
+// ---------------------------------------------------------------------------
+
+function PixelIcon({ children }: { children: ReactNode }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width="18"
+      height="18"
+      shapeRendering="crispEdges"
+      aria-hidden="true"
+    >
+      <g fill="currentColor">{children}</g>
+    </svg>
+  );
+}
+
+function PixelMic() {
+  return (
+    <PixelIcon>
+      <rect x="6" y="1" width="4" height="6" />
+      <rect x="5" y="2" width="1" height="4" />
+      <rect x="10" y="2" width="1" height="4" />
+      <rect x="4" y="7" width="1" height="2" />
+      <rect x="11" y="7" width="1" height="2" />
+      <rect x="5" y="9" width="6" height="1" />
+      <rect x="7" y="10" width="2" height="3" />
+      <rect x="5" y="13" width="6" height="1" />
+    </PixelIcon>
+  );
+}
+
+function PixelAttach() {
+  return (
+    <PixelIcon>
+      <rect x="5" y="1" width="6" height="1" />
+      <rect x="10" y="1" width="1" height="9" />
+      <rect x="5" y="9" width="6" height="1" />
+      <rect x="5" y="1" width="1" height="4" />
+      <rect x="7" y="4" width="4" height="1" />
+      <rect x="7" y="4" width="1" height="4" />
+      <rect x="7" y="8" width="4" height="1" />
+      <rect x="10" y="5" width="1" height="3" />
+    </PixelIcon>
+  );
+}
+
+function PixelSend() {
+  return (
+    <PixelIcon>
+      <rect x="2" y="7" width="6" height="2" />
+      <rect x="6" y="5" width="2" height="6" />
+      <rect x="8" y="3" width="2" height="10" />
+      <rect x="10" y="1" width="2" height="14" />
+      <rect x="12" y="3" width="1" height="10" />
+    </PixelIcon>
+  );
+}
+
+function PixelStop() {
+  return (
+    <PixelIcon>
+      <rect x="4" y="4" width="8" height="8" />
+    </PixelIcon>
+  );
+}
+
 interface MicVisual {
-  icon: string;
+  stop: boolean;
   label: string;
   title: string;
   pulse: boolean;
@@ -25,17 +98,17 @@ interface MicVisual {
 function micVisual(state: VoiceState): MicVisual {
   switch (state) {
     case 'speaking':
-      return { icon: '⏹', label: 'Stop', title: 'Stop MEW speaking', pulse: false, danger: true };
+      return { stop: true, label: 'Stop', title: 'Stop MEW speaking', pulse: false, danger: true };
     case 'listening':
-      return { icon: '🎤', label: 'Listening…', title: 'Listening — tap to stop', pulse: true, danger: false };
+      return { stop: false, label: 'Listening…', title: 'Listening — tap to stop', pulse: true, danger: false };
     case 'recognizing':
-      return { icon: '👂', label: 'Heard…', title: 'Transcribing — tap to stop', pulse: true, danger: false };
+      return { stop: false, label: 'Heard…', title: 'Transcribing — tap to stop', pulse: true, danger: false };
     case 'thinking':
-      return { icon: '🧠', label: 'Thinking…', title: 'Working — tap to stop listening', pulse: true, danger: false };
+      return { stop: false, label: 'Thinking…', title: 'Working — tap to stop listening', pulse: true, danger: false };
     case 'error':
-      return { icon: '🔁', label: 'Retry', title: 'Voice error — tap to try again', pulse: false, danger: true };
+      return { stop: false, label: 'Retry', title: 'Voice error — tap to try again', pulse: false, danger: true };
     default:
-      return { icon: '🎤', label: 'Talk', title: 'Activate voice interface', pulse: false, danger: false };
+      return { stop: false, label: 'Talk', title: 'Activate voice interface', pulse: false, danger: false };
   }
 }
 
@@ -47,6 +120,8 @@ function formatSize(bytes: number): string {
 
 /**
  * The universal input bar: autosizing textarea + mic + attach + send/stop.
+ * The textarea is a LOCAL debounced draft: keystrokes never re-render the
+ * chat list, and send() always receives the flushed latest text.
  * Pending attachments render as removable chips above the textarea.
  */
 export function UniversalInput({
@@ -73,13 +148,69 @@ export function UniversalInput({
   const areaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
+  const [draft, setDraft] = useState(value);
+  const draftRef = useRef(draft);
+  const lastExternalRef = useRef(value);
+  const debounceRef = useRef<number | null>(null);
+
+  // External value changes (prefill, clear-after-send) overwrite the draft;
+  // our own debounced mirrors are ignored.
+  useEffect(() => {
+    if (value !== lastExternalRef.current) {
+      lastExternalRef.current = value;
+      if (debounceRef.current !== null) {
+        window.clearTimeout(debounceRef.current);
+        debounceRef.current = null;
+      }
+      draftRef.current = value;
+      setDraft(value);
+    }
+  }, [value]);
+
+  useEffect(
+    () => () => {
+      if (debounceRef.current !== null) window.clearTimeout(debounceRef.current);
+    },
+    [],
+  );
+
+  const commitDraft = (v: string) => {
+    draftRef.current = v;
+    setDraft(v);
+    if (debounceRef.current !== null) window.clearTimeout(debounceRef.current);
+    debounceRef.current = window.setTimeout(() => {
+      debounceRef.current = null;
+      lastExternalRef.current = v;
+      onChange(v);
+    }, DRAFT_DEBOUNCE_MS);
+  };
+
+  /** Flush any pending debounce and return the latest text. */
+  const flushDraft = (): string => {
+    if (debounceRef.current !== null) {
+      window.clearTimeout(debounceRef.current);
+      debounceRef.current = null;
+    }
+    const text = draftRef.current;
+    lastExternalRef.current = text;
+    onChange(text);
+    return text;
+  };
+
+  const handleSend = () => {
+    if (disabled || busy) return;
+    const text = flushDraft();
+    if (!text.trim() && pending.length === 0) return;
+    onSend(text);
+  };
+
   // Autosize: grow with content up to ~6 lines, then scroll.
   useEffect(() => {
     const el = areaRef.current;
     if (!el) return;
     el.style.height = 'auto';
     el.style.height = `${Math.min(el.scrollHeight, 148)}px`;
-  }, [value]);
+  }, [draft]);
 
   // Expose prefill/focus for quick-action chips and voice.
   useEffect(() => {
@@ -106,10 +237,10 @@ export function UniversalInput({
   };
   const v = micVisual(voiceState);
 
-  const canSend = !disabled && (value.trim().length > 0 || pending.length > 0);
+  const canSend = !disabled && (draft.trim().length > 0 || pending.length > 0);
 
   return (
-    <div className="rounded-2xl border border-accent/25 bg-carbon/70 shadow-[0_0_32px_rgba(0,240,255,0.08)] backdrop-blur">
+    <div className="rounded-2xl border border-accent/25 bg-carbon/70 shadow-[0_0_32px_rgba(56,225,255,0.08)] backdrop-blur">
       {pending.length > 0 && (
         <div className="flex flex-wrap gap-2 border-b border-accent/10 px-4 pt-3">
           {pending.map((f, i) => (
@@ -153,9 +284,9 @@ export function UniversalInput({
           title="Attach files (or drag & drop onto the conversation)"
           aria-label="Attach files"
           disabled={disabled}
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-accent/30 bg-accent/5 text-lg text-cyan-200/80 transition-all hover:border-accent/60 hover:bg-accent/15 hover:text-accent disabled:opacity-30"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-accent/30 bg-accent/5 text-cyan-200/80 transition-all hover:border-accent/60 hover:bg-accent/15 hover:text-accent disabled:opacity-30"
         >
-          📎
+          <PixelAttach />
         </button>
 
         <button
@@ -163,8 +294,8 @@ export function UniversalInput({
           onClick={onMic}
           disabled={!voiceSupported || disabled}
           title={voiceSupported ? v.title : 'Voice not supported in this browser — type instead'}
-          aria-label={voiceSupported ? v.title : 'Voice unavailable'}
-          className={`relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border text-lg transition-all disabled:opacity-30 ${
+          aria-label={voiceSupported ? `${v.label} — ${v.title}` : 'Voice unavailable'}
+          className={`relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border transition-all disabled:opacity-30 ${
             v.danger
               ? 'border-crimson/70 bg-crimson/10 text-red-300'
               : voiceState === 'idle'
@@ -175,19 +306,19 @@ export function UniversalInput({
           {v.pulse && (
             <span className="absolute inset-0 rounded-xl border border-accent/50 hud-blink" aria-hidden="true" />
           )}
-          <span aria-hidden="true">{v.icon}</span>
+          {v.stop ? <PixelStop /> : <PixelMic />}
         </button>
 
         <textarea
           ref={areaRef}
           rows={1}
-          value={value}
+          value={draft}
           disabled={disabled}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => commitDraft(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
-              if (canSend && !busy) onSend();
+              if (canSend && !busy) handleSend();
             }
           }}
           placeholder="Message MEW… (Shift+Enter for a new line)"
@@ -201,20 +332,20 @@ export function UniversalInput({
             onClick={onStop}
             title="Stop generating"
             aria-label="Stop generating"
-            className="flex h-11 shrink-0 items-center gap-2 rounded-xl border border-crimson/70 bg-crimson/15 px-4 font-mono text-xs uppercase tracking-[0.2em] text-red-300 shadow-[0_0_24px_rgba(239,68,68,0.3)] hover:bg-crimson/25"
+            className="flex h-11 shrink-0 items-center gap-2 rounded-xl border border-crimson/70 bg-crimson/15 px-4 font-mono text-xs uppercase tracking-[0.2em] text-red-300 shadow-[0_0_24px_rgba(230,36,41,0.3)] hover:bg-crimson/25"
           >
-            ⏹ Stop
+            <PixelStop /> Stop
           </button>
         ) : (
           <button
             type="button"
-            onClick={onSend}
+            onClick={handleSend}
             disabled={!canSend}
             title="Send"
             aria-label="Send message"
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-accent/60 bg-accent/15 text-lg text-accent shadow-[0_0_24px_rgba(0,240,255,0.25)] transition-all hover:bg-accent/25 disabled:opacity-30 disabled:shadow-none"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-accent/60 bg-accent/15 text-accent shadow-[0_0_24px_rgba(56,225,255,0.25)] transition-all hover:bg-accent/25 disabled:opacity-30 disabled:shadow-none"
           >
-            ➤
+            <PixelSend />
           </button>
         )}
       </div>
