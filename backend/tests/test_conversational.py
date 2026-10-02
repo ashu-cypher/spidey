@@ -48,6 +48,9 @@ def test_parse_reminder_relative_durations(monkeypatch):
     assert parse_reminder_at("remind me in 3 days to review notes") == datetime(
         2026, 10, 5, 10, 0, 0
     )
+    assert parse_reminder_at("remind me in 20 seconds to study") == datetime(
+        2026, 10, 2, 10, 0, 20
+    )
 
 
 def test_parse_reminder_at_5pm_today_or_tomorrow(monkeypatch):

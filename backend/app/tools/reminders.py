@@ -37,11 +37,15 @@ def parse_reminder_at(text: str) -> datetime:
     lowered = (text or "").lower()
     now = _utcnow()
 
-    in_match = re.search(r"\bin\s+(\d+)\s+(hours?|minutes?|days?)\b", lowered)
+    in_match = re.search(
+        r"\bin\s+(\d+)\s+(seconds?|hours?|minutes?|days?)\b", lowered
+    )
     if in_match:
         n = int(in_match.group(1))
         unit = in_match.group(2)
-        if "hour" in unit:
+        if "second" in unit:
+            delta = timedelta(seconds=n)
+        elif "hour" in unit:
             delta = timedelta(hours=n)
         elif "day" in unit:
             delta = timedelta(days=n)
