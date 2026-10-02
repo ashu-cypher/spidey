@@ -2,10 +2,14 @@ import re
 
 from app.config import settings
 from app.providers.base import AIProvider
+from app.services.language import detect_language, split_sentences
 
-_REMEMBER = re.compile(r"\bremember\s+(?:that\s+)?(.+)", re.IGNORECASE)
+_REMEMBER = re.compile(
+    r"\bremember\s+(?:that\s+)?(.+)|\byaad\s+rakh(na|o)?\b", re.IGNORECASE
+)
 _RECALL = re.compile(
-    r"\b(what do you know|what am i learning|what.*\bremember\b|do you remember|recall\b)",
+    r"\b(what do you know|what am i learning|what.*\bremember\b|do you remember|recall\b)"
+    r"|\bkya\s+yaad\s+hai\b|\btumhe\s+kya\s+yaad\b",
     re.IGNORECASE,
 )
 _TASK_CREATE = re.compile(
@@ -15,13 +19,24 @@ _TASK_CREATE = re.compile(
 # delete/complete intents because "finish" in the task title would otherwise
 # trip _TASK_COMPLETE ("finish ... tasks").
 _TASK_CREATE_ADD = re.compile(r"\badd\b.{0,60}\bto my tasks?\b", re.IGNORECASE)
+# Hindi/Hinglish task phrasing: "ek kaam add karo", "naya task banao".
+# Scoped to an action verb near kaam/task so a bare "kya kaam hai" does not
+# misfire into task creation.
+_TASK_CREATE_HI = re.compile(
+    r"\b(kaam|task)\b.{0,25}\b(add|karo|karna|banao|create)\b"
+    r"|\b(add|banao)\b.{0,25}\b(kaam|task)\b",
+    re.IGNORECASE,
+)
 _TASK_LIST = re.compile(
-    r"\b(list|show)\b.{0,20}\btasks?\b|\bmy tasks\b", re.IGNORECASE
+    r"\b(list|show)\b.{0,20}\btasks?\b|\bmy tasks\b"
+    r"|\bmere\s+tasks?\b|\btasks?\s+hain\b",
+    re.IGNORECASE,
 )
 # Phase 5 intents. "remind me to" used to route to task_create; it now owns
 # reminders. These are checked BEFORE the generic task intents below.
 _REMINDER_CREATE = re.compile(
-    r"\bremind me to\b|\bremind me (in|at)\b|\bset\s+(?:a\s+)?reminders?\b",
+    r"\bremind me to\b|\bremind me (in|at)\b|\bset\s+(?:a\s+)?reminders?\b"
+    r"|\byaad\s+dila(na|o|dena)?\b",
     re.IGNORECASE,
 )
 _REMINDER_COMPLETE = re.compile(
@@ -35,7 +50,8 @@ _REMINDER_DELETE = re.compile(
     re.IGNORECASE,
 )
 _REMINDER_LIST = re.compile(
-    r"\b(list|show)\b.{0,20}\breminders?\b|\bmy reminders?\b", re.IGNORECASE
+    r"\b(list|show)\b.{0,20}\breminders?\b|\bmy reminders?\b|\bmere\s+reminders?\b",
+    re.IGNORECASE,
 )
 _TASK_DELETE = re.compile(
     r"\b(delete|remove|drop|cancel)\b.{0,30}\btasks?\b"
@@ -45,7 +61,8 @@ _TASK_DELETE = re.compile(
 _TASK_COMPLETE = re.compile(
     r"\b(complete|finish|mark)\b.{0,30}\btasks?\b"
     r"|\btasks?\b.{0,20}\b(done|completed)\b"
-    r"|\bmark\b.{0,50}\bcomplete\b",
+    r"|\bmark\b.{0,50}\bcomplete\b"
+    r"|\bkaam\s+(ho\s+gaya|complete)\b",
     re.IGNORECASE,
 )
 # Web search — checked AFTER _KNOWLEDGE so "search my documents" stays RAG.
@@ -98,9 +115,11 @@ _DEFINITION_ASK = re.compile(
     r"\bwhat\s+is\b|\bwhat's\b|\bwho\s+is\b|\bdefine\b", re.IGNORECASE
 )
 _GREETING = re.compile(
-    r"\b(hello|hi|hey|good morning|good afternoon|good evening)\b", re.IGNORECASE
+    r"\b(hello|hi|hey|good morning|good afternoon|good evening|namaste)\b"
+    r"|नमस्ते",
+    re.IGNORECASE,
 )
-_HELP = re.compile(r"\bhelp\b|what can you do", re.IGNORECASE)
+_HELP = re.compile(r"\bhelp\b|what can you do|\bmadad\b", re.IGNORECASE)
 # Knowledge base (RAG) intents — kept distinct from memory intents: the memory
 # tool holds personal facts, the rag tool searches uploaded documents.
 _KNOWLEDGE = re.compile(
@@ -299,6 +318,15 @@ class RuleBasedProvider(AIProvider):
                 "tools": ["tasks"],
                 "response_mode": "confirm",
             }
+        if _TASK_CREATE_HI.search(text):
+            # Hindi/Hinglish "ek kaam add karo" / "naya task banao".
+            return {
+                "intent": "task_create",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["tasks"],
+                "response_mode": "confirm",
+            }
         if _TASK_DELETE.search(text):
             return {
                 "intent": "task_delete",
@@ -416,17 +444,34 @@ class RuleBasedProvider(AIProvider):
         }
 
     async def aclassify_intent(
-        self, text: str, history: list[dict] | None = None
+        self, text: str, history: list[dict] | None = None, lang: str | None = None
     ) -> dict:
+        # Intent labels are language-agnostic; ``lang`` is accepted for API
+        # symmetry with the other providers and currently unused.
         return self._classify(text, history)
 
+    @staticmethod
+    def _pick(lang: str, en: str, hinglish: str, hi: str) -> str:
+        """Response template for the reply language (never translated across)."""
+        if lang == "hi":
+            return hi
+        if lang == "hinglish":
+            return hinglish
+        return en
+
     async def agenerate(
-        self, text: str, context: str = "", history: list[dict] | None = None
+        self,
+        text: str,
+        context: str = "",
+        history: list[dict] | None = None,
+        lang: str | None = None,
     ) -> str:
         if context:
             return context
+        lang = lang or detect_language(text)
         classification = self._classify(text, history)
         intent = classification["intent"]
+        pick = lambda en, hinglish, hi: self._pick(lang, en, hinglish, hi)
         if intent == "conversation_recall":
             # Real data only: topics come from the request's history, never
             # invented. Cap at the 3 most recent user turns. Follow-up turns
@@ -453,46 +498,94 @@ class RuleBasedProvider(AIProvider):
                 if i == 0 or t.lower() != topics[i - 1].lower()
             ]
             if not topics:
-                return (
-                    "We haven't discussed anything yet in this conversation, sir."
+                return pick(
+                    "We haven't discussed anything yet in this conversation, sir.",
+                    "Humne is conversation mein abhi kuch discuss nahi kiya hai.",
+                    "हमने इस बातचीत में अभी कुछ चर्चा नहीं की है।",
                 )
-            return f"Earlier, sir, we discussed: {', then '.join(topics)}."
+            joined = ", then ".join(topics)
+            return pick(
+                f"Earlier, sir, we discussed: {joined}.",
+                f"Pehle humne in baaton par discuss kiya: {joined}.",
+                f"पहले हमने इन विषयों पर चर्चा की: {joined}।",
+            )
         if intent == "chat_followup":
             # The topic is guaranteed non-empty by _classify; the reply stays
             # honest and conversational with one concrete follow-up offer.
             topic = classification.get("topic") or _extract_topic(
                 _last_user_turn(history)
             )
-            return (
+            return pick(
                 f"On {topic}, sir — happy to go deeper on that. Shall I search "
                 f"your documents for what they say about {topic}, or look it "
-                "up on the web?"
+                "up on the web?",
+                f"{topic} ke baare mein — khushi se aur detail mein bata sakta "
+                f"hoon. Kya main aapke documents mein '{topic}' dhoondhoon, ya "
+                "web par search karoon?",
+                f"{topic} के बारे में — खुशी से और विस्तार से बता सकता हूँ। "
+                f"क्या मैं आपके दस्तावेज़ों में '{topic}' खोजूँ, या वेब पर देखूँ?",
             )
         if intent == "greeting":
-            return (
+            return pick(
                 f"At your service, sir. {settings.persona_name} online "
-                "and at your disposal."
+                "and at your disposal.",
+                "Hey! Main Spidey hoon — bolo, kya kaam hai?",
+                "नमस्ते! मैं स्पाइडी हूँ। आज मैं आपकी क्या मदद कर सकता हूँ?",
             )
         if intent == "help":
-            return (
+            return pick(
                 "Certainly, sir. I can calculate, remember things, manage "
                 "tasks and reminders, search the web, search your uploaded "
                 "documents, create documents and notes, explain code, analyze "
                 "your resume, report system status, and chat. Try: "
                 "'calculate 12 * 8', 'remind me to call mom tomorrow', "
                 "'system status', 'search the web for quantum computing', or "
-                "'explain this code: ...'."
+                "'explain this code: ...'.",
+                "Zaroor! Main calculation kar sakta hoon, cheezein yaad rakh "
+                "sakta hoon, tasks aur reminders manage kar sakta hoon, web "
+                "search kar sakta hoon, aapke documents mein dhoondh sakta "
+                "hoon, notes bana sakta hoon, code samjha sakta hoon, resume "
+                "analyze kar sakta hoon, aur system status bata sakta hoon. "
+                "Try karo: '12 * 8 kitna hai', 'kal 9 baje mujhe assignment "
+                "yaad dila dena', ya 'mere tasks dikhao'.",
+                "ज़रूर! मैं गणना कर सकता हूँ, बातें याद रख सकता हूँ, टास्क और "
+                "रिमाइंडर संभाल सकता हूँ, वेब पर खोज सकता हूँ, आपके दस्तावेज़ों "
+                "में खोज सकता हूँ, नोट्स बना सकता हूँ, कोड समझा सकता हूँ, "
+                "रिज़्यूमे जाँच सकता हूँ और सिस्टम स्थिति बता सकता हूँ।",
             )
         if _DEFINITION_ASK.search(text):
             # Honest fallback for knowledge questions the rule-based provider
             # cannot answer itself: name the topic and offer a real search.
             topic = _extract_topic(text)
             if topic:
-                return (
+                return pick(
                     f"I don't have that in my built-in knowledge, sir — shall "
-                    f"I search the web for '{topic}'? Just say the word."
+                    f"I search the web for '{topic}'? Just say the word.",
+                    f"Yeh mere built-in knowledge mein nahi hai — kya main web "
+                    f"par '{topic}' search karoon? Bas bolo.",
+                    f"यह मेरी जानकारी में नहीं है — क्या मैं वेब पर '{topic}' "
+                    "खोजूँ? बस कहिए।",
                 )
-        return (
+        return pick(
             "Understood, sir — though I shall need something more concrete. "
-            "A calculation, something to remember, or a task, perhaps?"
+            "A calculation, something to remember, or a task, perhaps?",
+            "Samajh gaya — lekin thoda aur detail chahiye. Koi calculation, "
+            "yaad rakhne wali baat, ya koi task?",
+            "समझ गया — लेकिन थोड़ा और विस्तार चाहिए। कोई गणना, याद रखने "
+            "वाली बात, या कोई कार्य?",
         )
+
+    async def agenerate_stream(
+        self,
+        message: str,
+        context: str = "",
+        history: list[dict] | None = None,
+        lang: str | None = None,
+    ):
+        """Compose via the existing rule-based logic, then yield sentence
+        chunks (split on ./!/?/। boundaries, punctuation kept). No timers."""
+        text = await self.agenerate(
+            message, context=context, history=history, lang=lang
+        )
+        for chunk in split_sentences(text):
+            yield chunk

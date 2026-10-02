@@ -3,6 +3,7 @@ import logging
 import re
 import secrets
 import time
+from datetime import datetime
 from inspect import Parameter, signature
 from typing import Any, Awaitable, Callable
 
@@ -14,6 +15,11 @@ from app.config import settings
 from app.database import get_session
 from app.models import ToolCall, WorkflowRun as WorkflowRunRow
 from app.providers.base import AIProvider
+from app.services.language import (
+    detect_language,
+    make_voice_summary,
+    split_sentences,
+)
 from app.tools.base import BaseTool, ToolError
 from app.tools.reminders import extract_reminder_title, parse_reminder_at
 from app.tools.tasks import parse_due
@@ -21,6 +27,22 @@ from app.tools.tasks import parse_due
 logger = logging.getLogger("spidey")
 
 _FALLBACK_REPLY = "Spidey couldn't complete that step."
+
+# Language-aware generic failure text for the streaming error event.
+_FALLBACK_BY_LANG = {
+    "en": _FALLBACK_REPLY,
+    "hinglish": "Spidey yeh step poora nahi kar paya.",
+    "hi": "स्पाइडी यह चरण पूरा नहीं कर पाया।",
+}
+
+# Sentence terminators counted when buffering streamed chunks before the
+# voice summary goes out (Devanagari danda included).
+_SENTENCE_END_COUNT = re.compile(r"[.!?\u0964]")
+
+
+async def _noop_emit(event_type: str, data: dict) -> None:
+    """Default emit for run_stream when the caller passes none."""
+    return None
 
 NO_CV_REPLY = "I don't have your CV yet — upload it in the Resume tab."
 
@@ -115,9 +137,43 @@ class SpideyAgent:
         return pending
 
     @staticmethod
-    def _proposal(tool_name: str, args: dict) -> str:
+    def _proposal(tool_name: str, args: dict, lang: str = "en") -> str:
         action = args.get("action")
         title = args.get("title") or args.get("text") or args.get("id") or "this item"
+        if lang == "hi":
+            if tool_name == "tasks" and action == "delete":
+                return f'टास्क "{title}" हटा दूँ?'
+            if tool_name == "reminders" and action == "delete":
+                return f'रिमाइंडर "{title}" हटा दूँ?'
+            if tool_name == "documents" and action == "delete":
+                return f'दस्तावेज़ "{title}" हटा दूँ?'
+            if tool_name == "memory" and action == "delete":
+                return f'यह याददाश्त हटा दूँ: "{str(title)[:80]}"?'
+            if tool_name == "system":
+                # The tool's own proposal wording is mirrored here so the chat
+                # confirm_token flow shows the exact pending action.
+                if action == "run":
+                    return f"शेल कमांड चलाऊँ: {args.get('command', '')}"
+                if action == "open_website":
+                    return f"वेबसाइट खोलूँ: {args.get('url', '')}"
+                return f"सिस्टम ({action}) चलाऊँ?"
+            return f"{tool_name} ({action}) चलाऊँ?"
+        if lang == "hinglish":
+            if tool_name == "tasks" and action == "delete":
+                return f'Task "{title}" delete kar doon?'
+            if tool_name == "reminders" and action == "delete":
+                return f'Reminder "{title}" delete kar doon?'
+            if tool_name == "documents" and action == "delete":
+                return f'Document "{title}" delete kar doon?'
+            if tool_name == "memory" and action == "delete":
+                return f'Yeh memory delete kar doon: "{str(title)[:80]}"?'
+            if tool_name == "system":
+                if action == "run":
+                    return f"Shell command chalaoon: {args.get('command', '')}"
+                if action == "open_website":
+                    return f"Website khol doon: {args.get('url', '')}"
+                return f"System ({action}) chalaoon?"
+            return f"{tool_name} ({action}) chalaoon?"
         if tool_name == "tasks" and action == "delete":
             return f'Delete the task "{title}"?'
         if tool_name == "reminders" and action == "delete":
@@ -365,19 +421,172 @@ class SpideyAgent:
             p.kind == Parameter.VAR_KEYWORD for p in params.values()
         )
 
-    async def _aclassify(self, message: str, history: list[dict]) -> dict:
-        if self._accepts_history(self.provider.aclassify_intent):
-            return await self.provider.aclassify_intent(message, history=history)
-        return await self.provider.aclassify_intent(message)
+    @staticmethod
+    def _accepts_lang(fn: Callable) -> bool:
+        """Backward compat: some providers predate the ``lang`` kwarg.
+
+        Mirrors ``_accepts_history`` — only pass ``lang=`` when the
+        signature accepts it, so older provider signatures don't break.
+        """
+        try:
+            params = signature(fn).parameters
+        except (TypeError, ValueError):
+            return False
+        if "lang" in params:
+            return True
+        return any(
+            p.kind == Parameter.VAR_KEYWORD for p in params.values()
+        )
+
+    async def _aclassify(
+        self, message: str, history: list[dict], lang: str = "en"
+    ) -> dict:
+        fn = self.provider.aclassify_intent
+        kwargs: dict = {}
+        if self._accepts_lang(fn):
+            kwargs["lang"] = lang
+        if self._accepts_history(fn):
+            kwargs["history"] = history
+        classification = dict(await fn(message, **kwargs))
+        # Fast-path audit: the "Understand request" step output records which
+        # branch the classification selected up front ("Fast path: calculate"),
+        # proving one request resolves to one downstream generation call.
+        classification["fast_path"] = (
+            f"Fast path: {classification.get('intent', 'chat_fallback')}"
+        )
+        return classification
 
     async def _agenerate(
-        self, message: str, context: str, history: list[dict]
+        self, message: str, context: str, history: list[dict], lang: str = "en"
     ) -> str:
-        if self._accepts_history(self.provider.agenerate):
-            return await self.provider.agenerate(
-                message, context=context, history=history
+        fn = self.provider.agenerate
+        kwargs: dict = {"context": context}
+        if self._accepts_lang(fn):
+            kwargs["lang"] = lang
+        if self._accepts_history(fn):
+            kwargs["history"] = history
+        return await fn(message, **kwargs)
+
+    async def _stream_chunks(
+        self, message: str, context: str, history: list[dict], lang: str
+    ):
+        """Yield provider stream chunks, with a single-chunk fallback for
+        legacy duck-typed providers that predate ``agenerate_stream``."""
+        fn = getattr(self.provider, "agenerate_stream", None)
+        if not callable(fn):
+            yield await self._agenerate(message, context, history, lang)
+            return
+        kwargs: dict = {}
+        if self._accepts_lang(fn):
+            kwargs["lang"] = lang
+        if self._accepts_history(fn):
+            kwargs["history"] = history
+        async for chunk in fn(message, context=context, **kwargs):
+            yield chunk
+
+    @staticmethod
+    async def _emit_chunks(chunks, lang: str, emit) -> str:
+        """Emit ``voice_summary`` first, then ``delta`` per chunk.
+
+        The summary needs the first sentences, so chunks are buffered until
+        two sentence terminators are seen (model providers) — the buffered
+        text then goes out as the first delta and streaming continues. The
+        summary is pure truncation of the response: first <=2 sentences,
+        max ~280 chars, always a prefix of the full text. Returns the full
+        reassembled text.
+        """
+        full_parts: list[str] = []
+        held: list[str] = []  # chunks held back until the summary is out
+        summary_emitted = False
+        async for chunk in chunks:
+            if not chunk:
+                continue
+            full_parts.append(chunk)
+            if summary_emitted:
+                await emit("delta", {"text": chunk})
+            else:
+                held.append(chunk)
+                so_far = "".join(held)
+                if len(_SENTENCE_END_COUNT.findall(so_far)) >= 2:
+                    await emit(
+                        "voice_summary",
+                        {"text": make_voice_summary(so_far, lang)},
+                    )
+                    await emit("delta", {"text": so_far})
+                    held = []
+                    summary_emitted = True
+        full = "".join(full_parts)
+        if not summary_emitted:
+            await emit(
+                "voice_summary", {"text": make_voice_summary(full, lang)}
             )
-        return await self.provider.agenerate(message, context=context)
+        if held:
+            await emit("delta", {"text": "".join(held)})
+        return full
+
+    async def _stream_generate_and_emit(
+        self,
+        message: str,
+        context: str,
+        history: list[dict],
+        lang: str,
+        emit,
+    ) -> str:
+        """Stream one generation through the provider, emitting
+        ``voice_summary`` + ``delta`` events. Exactly one provider
+        generation call per invocation (fast-path audit)."""
+        return await self._emit_chunks(
+            self._stream_chunks(message, context, history, lang), lang, emit
+        )
+
+    @staticmethod
+    async def _text_chunks(text: str):
+        """Chunk already-composed text for streaming without a provider call."""
+        for chunk in split_sentences(text):
+            yield chunk
+
+    @staticmethod
+    def _user_msg_lang(exc: Exception, lang: str) -> str:
+        """User-safe error text, in the reply language for generic failures."""
+        if isinstance(exc, ToolError):
+            return exc.user_message
+        return _FALLBACK_BY_LANG.get(lang, _FALLBACK_REPLY)
+
+    @staticmethod
+    def _hi_when_label(remind_at: str | None, lang: str) -> str:
+        """'kal 9 baje' / 'कल 9 बजे' label for reminder facts.
+
+        Resolved against the SERVER clock (same basis as parse_reminder_at),
+        not the user's timezone.
+        """
+        if not remind_at:
+            return ""
+        try:
+            dt = datetime.fromisoformat(str(remind_at)).replace(tzinfo=None)
+        except ValueError:
+            return ""
+        days = (dt.date() - datetime.now().date()).days
+        if lang == "hi":
+            day = (
+                "आज"
+                if days == 0
+                else "कल"
+                if days == 1
+                else "परसों"
+                if days == 2
+                else dt.strftime("%d %b")
+            )
+            return f"{day} {dt.hour} बजे "
+        day = (
+            "aaj"
+            if days == 0
+            else "kal"
+            if days == 1
+            else "parso"
+            if days == 2
+            else dt.strftime("%d %b")
+        )
+        return f"{day} {dt.hour} baje "
 
     async def run(
         self,
@@ -385,11 +594,14 @@ class SpideyAgent:
         run,
         engine,
         history: list[dict] | None = None,
+        lang: str = "auto",
     ) -> str:
         # Conversation continuity: the last 10 turns travel with the message
         # so the provider can resolve pronoun follow-ups ("why would I use
         # it?"). The route bounds history; this is belt-and-braces.
         history = (history or [])[-10:]
+        # Reply language: detected per message unless the caller forced one.
+        lang = detect_language(message, lang)
         _step = self._stepper(run, engine)
         tool_results: dict[str, dict] = {}
         classification: dict | None = None
@@ -400,7 +612,7 @@ class SpideyAgent:
             classification = await _step(
                 "Understand request",
                 "understand",
-                lambda: self._aclassify(message, history),
+                lambda: self._aclassify(message, history, lang),
             )
             intent = classification.get("intent", "chat_fallback")
             if intent in ("resume_analyze", "resume_improve"):
@@ -453,7 +665,7 @@ class SpideyAgent:
             )
             if gated is not None:
                 plan_step, tool_name, args = gated
-                proposal = self._proposal(tool_name, args)
+                proposal = self._proposal(tool_name, args, lang)
                 token = secrets.token_urlsafe(24)
                 self._pending[token] = {
                     "tool": tool_name,
@@ -462,6 +674,7 @@ class SpideyAgent:
                     "classification": classification,
                     "plan_step": plan_step,
                     "proposal": proposal,
+                    "lang": lang,
                     "expires_at": time.time() + CONFIRM_TTL_SECONDS,
                 }
                 async def _proposal_out() -> dict:
@@ -533,11 +746,11 @@ class SpideyAgent:
                         if tn in tool_results
                     ]
 
-            facts = self._compose_facts(intent, message, tool_results, mems)
+            facts = self._compose_facts(intent, message, tool_results, mems, lang)
             response = await _step(
                 "Compose response",
                 "respond",
-                lambda: self._agenerate(message, facts, history),
+                lambda: self._agenerate(message, facts, history, lang),
                 input_data={"facts": facts[:500]},
             )
 
@@ -572,6 +785,9 @@ class SpideyAgent:
         message = pending["message"]
         classification = pending["classification"]
         intent = classification.get("intent", "chat_fallback")
+        # The reply language was detected when the confirmation was proposed;
+        # re-detect defensively for tokens created before lang was stored.
+        lang = detect_language(message, pending.get("lang", "auto"))
         try:
             mems: list[dict] = []
             if classification.get("requires_memory"):
@@ -595,11 +811,11 @@ class SpideyAgent:
             await _step(
                 "Verify results", "verify", lambda: self._verify(tool_results)
             )
-            facts = self._compose_facts(intent, message, tool_results, mems)
+            facts = self._compose_facts(intent, message, tool_results, mems, lang)
             response = await _step(
                 "Compose response",
                 "respond",
-                lambda: self._agenerate(message, facts, history),
+                lambda: self._agenerate(message, facts, history, lang),
                 input_data={"facts": facts[:500]},
             )
             await _step(
@@ -611,6 +827,360 @@ class SpideyAgent:
             return response
         except Exception:
             engine.finish_run(run.workflow_id, "failed", result=_FALLBACK_REPLY)
+            return _FALLBACK_REPLY
+
+    async def run_stream(
+        self,
+        message: str,
+        run,
+        engine,
+        history: list[dict] | None = None,
+        lang: str = "auto",
+        emit=None,
+    ) -> str:
+        """Streaming twin of :meth:`run`: identical stages (classify -> plan ->
+        memory -> tool args -> confirmation gate -> tool exec -> verify ->
+        generate -> memory update), but progress is pushed through ``emit``.
+
+        ``emit`` is ``async def emit(event_type: str, data: dict)``. Event
+        contract:
+        - ("state", {"state": "thinking"|"tool_start"|"tool_complete"|"speaking"
+          |"awaiting_confirmation", "label": ..., "tool": ...})
+        - ("voice_summary", {"text": ...}) — emitted BEFORE any delta
+        - ("delta", {"text": ...}) — streamed response chunks
+        - ("done", {"result", "run_id", "lang", "needs_confirmation",
+          "confirm_token", "proposal"})
+        - ("error", {"message": user-safe})
+
+        Steps are still recorded on the workflow engine, so
+        /api/workflow/{run_id} shows the run exactly like the non-streaming
+        path. Returns the full response text (or the confirmation payload).
+        """
+        history = (history or [])[-10:]
+        lang = detect_language(message, lang)
+        emit = emit or _noop_emit
+        _step = self._stepper(run, engine)
+        tool_results: dict[str, dict] = {}
+        classification: dict | None = None
+        facts = ""
+        mems: list[dict] = []
+
+        async def _done_event(result, needs_confirmation=False,
+                              confirm_token=None, proposal=None):
+            await emit(
+                "done",
+                {
+                    "result": result,
+                    "run_id": run.workflow_id,
+                    "lang": lang,
+                    "needs_confirmation": needs_confirmation,
+                    "confirm_token": confirm_token,
+                    "proposal": proposal,
+                },
+            )
+
+        try:
+            await emit(
+                "state",
+                {"state": "thinking", "label": "Understanding request"},
+            )
+            classification = await _step(
+                "Understand request",
+                "understand",
+                lambda: self._aclassify(message, history, lang),
+            )
+            intent = classification.get("intent", "chat_fallback")
+            if intent in ("resume_analyze", "resume_improve"):
+                # Same recorded pipeline as run(); the composed reply then
+                # streams as deltas without a second provider call.
+                await emit(
+                    "state",
+                    {"state": "thinking", "label": "Running resume pipeline"},
+                )
+                response = await self._run_resume_steps(
+                    _step, message, intent, run, engine
+                )
+                await emit(
+                    "state", {"state": "speaking", "label": "Speaking"}
+                )
+                full = await self._emit_chunks(
+                    self._text_chunks(response), lang, emit
+                )
+                await _done_event(full)
+                return full
+            plan = build_plan(classification)
+
+            if classification.get("requires_memory"):
+                await emit(
+                    "state", {"state": "thinking", "label": "Reading memory"}
+                )
+                mems = await _step(
+                    "Retrieve memory",
+                    "memory",
+                    lambda: self.memory.retrieve_relevant(message),
+                )
+
+            # Resolve all tool args up front — same semantics as run().
+            tool_jobs: list[tuple[dict, str, dict]] = []
+            for plan_step in plan:
+                if plan_step.get("type") != "tool":
+                    continue
+                tool_name = plan_step["tool"]
+                try:
+                    args = await self._tool_args(tool_name, intent, message)
+                except ToolError as exc:
+                    engine.finish_run(
+                        run.workflow_id, "failed", result=exc.user_message
+                    )
+                    await emit("error", {"message": exc.user_message})
+                    return exc.user_message
+                tool_name = args.pop("_resolved_tool", None) or tool_name
+                tool_jobs.append((plan_step, tool_name, args))
+
+            # Confirmation gate (spec 21) — same as run().
+            gated = next(
+                (
+                    job
+                    for job in tool_jobs
+                    if self._action_permission(job[1], job[2].get("action"), job[2])
+                    == "confirm"
+                ),
+                None,
+            )
+            if gated is not None:
+                plan_step, tool_name, args = gated
+                proposal = self._proposal(tool_name, args, lang)
+                token = secrets.token_urlsafe(24)
+                self._pending[token] = {
+                    "tool": tool_name,
+                    "args": args,
+                    "message": message,
+                    "classification": classification,
+                    "plan_step": plan_step,
+                    "proposal": proposal,
+                    "lang": lang,
+                    "expires_at": time.time() + CONFIRM_TTL_SECONDS,
+                }
+
+                async def _proposal_out() -> dict:
+                    return {"proposal": proposal}
+
+                await _step(
+                    "Request confirmation",
+                    "confirm",
+                    _proposal_out,
+                    input_data={"tool": tool_name, "action": args.get("action")},
+                )
+                payload = json.dumps(
+                    {
+                        "needs_confirmation": True,
+                        "proposal": proposal,
+                        "confirm_token": token,
+                    }
+                )
+                engine.finish_run(
+                    run.workflow_id, "awaiting_confirmation", result=payload
+                )
+                await emit(
+                    "state",
+                    {"state": "awaiting_confirmation", "proposal": proposal},
+                )
+                await _done_event(
+                    payload,
+                    needs_confirmation=True,
+                    confirm_token=token,
+                    proposal=proposal,
+                )
+                return payload
+
+            # Tool execution + bounded re-plan (Phase 7) — same as run().
+            replan_count = 0
+            pending_jobs: list[tuple[dict, str, dict]] = list(tool_jobs)
+            while pending_jobs:
+                current_jobs, pending_jobs = pending_jobs, []
+                for plan_step, tool_name, args in current_jobs:
+                    await emit(
+                        "state",
+                        {
+                            "state": "tool_start",
+                            "tool": tool_name,
+                            "label": f"Running {tool_name} tool",
+                        },
+                    )
+                    try:
+                        tool_results[tool_name] = await _step(
+                            plan_step["name"],
+                            "tool",
+                            lambda _t=tool_name, _a=args: self.tools[_t].execute(**_a),
+                            input_data=args,
+                            tool_name=tool_name,
+                        )
+                    except ToolError as exc:
+                        if tool_name == "search":
+                            tool_results[tool_name] = {
+                                "results": [],
+                                "error": exc.user_message,
+                            }
+                        else:
+                            raise
+                    await emit(
+                        "state",
+                        {
+                            "state": "tool_complete",
+                            "tool": tool_name,
+                            "label": f"{tool_name} tool finished",
+                        },
+                    )
+                if not tool_results:
+                    break
+                await emit(
+                    "state", {"state": "thinking", "label": "Verifying results"}
+                )
+                try:
+                    await _step(
+                        "Verify results",
+                        "verify",
+                        lambda: self._verify(tool_results),
+                    )
+                except ToolError:
+                    failed_tool = self._last_verify_failure
+                    tool_results.pop(failed_tool, None)
+                    if replan_count >= 1:
+                        break
+                    replan_count += 1
+                    pending_jobs = [
+                        (ps, tn, a)
+                        for (ps, tn, a) in tool_jobs
+                        if tn in tool_results
+                    ]
+
+            facts = self._compose_facts(intent, message, tool_results, mems, lang)
+            await emit("state", {"state": "speaking", "label": "Speaking"})
+            response = await _step(
+                "Compose response",
+                "respond",
+                lambda: self._stream_generate_and_emit(
+                    message, facts, history, lang, emit
+                ),
+                input_data={"facts": facts[:500]},
+            )
+
+            await emit(
+                "state", {"state": "thinking", "label": "Updating memory"}
+            )
+            await _step(
+                "Update memory",
+                "memory_update",
+                lambda: self._update_memory(intent, message),
+            )
+
+            engine.finish_run(run.workflow_id, "completed", result=response)
+            await _done_event(response)
+            return response
+        except Exception as exc:
+            msg = self._user_msg_lang(exc, lang)
+            engine.finish_run(run.workflow_id, "failed", result=_FALLBACK_REPLY)
+            await emit("error", {"message": msg})
+            return _FALLBACK_REPLY
+
+    async def run_stream_confirmed(
+        self,
+        pending: dict,
+        run,
+        engine,
+        history: list[dict] | None = None,
+        emit=None,
+    ) -> str:
+        """Streaming twin of :meth:`run_confirmed`: the tool is pre-resolved,
+        so this is Retrieve memory -> Execute -> Verify -> streamed
+        generation -> Update memory, with the same event contract as
+        :meth:`run_stream`."""
+        history = (history or [])[-10:]
+        emit = emit or _noop_emit
+        _step = self._stepper(run, engine)
+        tool_name = pending["tool"]
+        args = pending["args"]
+        message = pending["message"]
+        classification = pending["classification"]
+        intent = classification.get("intent", "chat_fallback")
+        lang = detect_language(message, pending.get("lang", "auto"))
+        try:
+            mems: list[dict] = []
+            if classification.get("requires_memory"):
+                await emit(
+                    "state", {"state": "thinking", "label": "Reading memory"}
+                )
+                mems = await _step(
+                    "Retrieve memory",
+                    "memory",
+                    lambda: self.memory.retrieve_relevant(message),
+                )
+            await emit(
+                "state",
+                {
+                    "state": "tool_start",
+                    "tool": tool_name,
+                    "label": f"Running {tool_name} tool",
+                },
+            )
+            confirmed_args = dict(args, _confirmed=True)
+            result = await _step(
+                pending["plan_step"]["name"],
+                "tool",
+                lambda: self.tools[tool_name].execute(**confirmed_args),
+                input_data=args,
+                tool_name=tool_name,
+            )
+            await emit(
+                "state",
+                {
+                    "state": "tool_complete",
+                    "tool": tool_name,
+                    "label": f"{tool_name} tool finished",
+                },
+            )
+            tool_results = {tool_name: result}
+            await emit(
+                "state", {"state": "thinking", "label": "Verifying results"}
+            )
+            await _step(
+                "Verify results", "verify", lambda: self._verify(tool_results)
+            )
+            facts = self._compose_facts(intent, message, tool_results, mems, lang)
+            await emit("state", {"state": "speaking", "label": "Speaking"})
+            response = await _step(
+                "Compose response",
+                "respond",
+                lambda: self._stream_generate_and_emit(
+                    message, facts, history, lang, emit
+                ),
+                input_data={"facts": facts[:500]},
+            )
+            await emit(
+                "state", {"state": "thinking", "label": "Updating memory"}
+            )
+            await _step(
+                "Update memory",
+                "memory_update",
+                lambda: self._update_memory(intent, message),
+            )
+            engine.finish_run(run.workflow_id, "completed", result=response)
+            await emit(
+                "done",
+                {
+                    "result": response,
+                    "run_id": run.workflow_id,
+                    "lang": lang,
+                    "needs_confirmation": False,
+                    "confirm_token": None,
+                    "proposal": None,
+                },
+            )
+            return response
+        except Exception as exc:
+            msg = self._user_msg_lang(exc, lang)
+            engine.finish_run(run.workflow_id, "failed", result=_FALLBACK_REPLY)
+            await emit("error", {"message": msg})
             return _FALLBACK_REPLY
 
     async def _run_resume_steps(self, _step, message: str, intent: str, run, engine) -> str:
@@ -1035,7 +1605,17 @@ class SpideyAgent:
         message: str,
         tool_results: dict[str, dict],
         mems: list[dict],
+        lang: str = "en",
     ) -> str:
+        def pick(en: str, hinglish: str, hi: str) -> str:
+            # Response template for the reply language; Hindi input is never
+            # translated into an English response.
+            if lang == "hi":
+                return hi
+            if lang == "hinglish":
+                return hinglish
+            return en
+
         if intent == "calculate":
             calc = tool_results.get("calculator", {})
             if "result" in calc:
@@ -1044,17 +1624,41 @@ class SpideyAgent:
         if intent == "remember":
             saved = tool_results.get("memory", {}).get("saved", {})
             content = saved.get("content", message)
-            return f"Remembered: {content}"
+            return pick(
+                f"Remembered: {content}",
+                f"Yaad rakh liya: {content}.",
+                f"याद रख लिया: {content}।",
+            )
         if intent == "recall_memory":
             results = tool_results.get("memory", {}).get("results", [])
             if results:
                 lines = "\n".join(f"- {m['content']}" for m in results)
-                return f"Here's what I remember:\n{lines}"
-            return "I don't have anything stored about that yet."
+                return pick(
+                    f"Here's what I remember:\n{lines}",
+                    f"Mujhe yeh sab yaad hai:\n{lines}",
+                    f"मुझे यह याद है:\n{lines}",
+                )
+            return pick(
+                "I don't have anything stored about that yet.",
+                "Is baare mein mujhe abhi kuch yaad nahi hai.",
+                "इस बारे में मुझे अभी कुछ याद नहीं है।",
+            )
         if intent == "task_create":
             task = tool_results.get("tasks", {}).get("task", {})
             title = task.get("title", "")
             due = task.get("due")
+            if lang == "hi":
+                return (
+                    f"टास्क बन गया: {title}"
+                    + (f" ({due} तक)" if due else "")
+                    + "। हो गया!"
+                )
+            if lang == "hinglish":
+                return (
+                    f"Task create ho gaya: {title}"
+                    + (f" (due {due})" if due else "")
+                    + ". Ho gaya!"
+                )
             reply = (
                 f"Task created: {title}" + (f" (due {due})" if due else "") + "."
                 " Done, sir — one less thing to worry about."
@@ -1070,25 +1674,47 @@ class SpideyAgent:
                     f"- [{'x' if t.get('done') else ' '}] {t.get('title')}"
                     for t in tasks
                 )
-                return f"Your tasks:\n{lines}"
-            return "No tasks yet — say 'create a task' to add one."
+                return pick(
+                    f"Your tasks:\n{lines}",
+                    f"Aapke tasks:\n{lines}",
+                    f"आपके टास्क:\n{lines}",
+                )
+            return pick(
+                "No tasks yet — say 'create a task' to add one.",
+                "Abhi koi task nahi hai — 'ek kaam add karo' bolo.",
+                "अभी कोई टास्क नहीं है।",
+            )
         if intent == "task_complete":
             # Cross-resolution may have executed against the reminders tool.
             task = tool_results.get("tasks", {}).get("task") or tool_results.get(
                 "reminders", {}
             ).get("reminder", {})
             title = task.get("title") or task.get("text", "")
-            return f'Done, sir — "{title}" marked complete.'
+            return pick(
+                f'Done, sir — "{title}" marked complete.',
+                f'Ho gaya! "{title}" complete kar diya.',
+                f'हो गया! "{title}" पूरा कर दिया।',
+            )
         if intent == "task_delete":
             deleted = tool_results.get("tasks", {}) or tool_results.get(
                 "reminders", {}
             )
             title = deleted.get("title") or deleted.get("text", "")
-            return f'Deleted the task "{title}".'
+            return pick(
+                f'Deleted the task "{title}".',
+                f'Task delete kar diya: "{title}".',
+                f'टास्क हटा दिया: "{title}"।',
+            )
         if intent == "reminder_create":
             reminder = tool_results.get("reminders", {}).get("reminder", {})
             at = reminder.get("remind_at")
             text = reminder.get("text", "")
+            if lang == "hi":
+                label = SpideyAgent._hi_when_label(at, "hi")
+                return f"हो गया! {label}याद दिला दूंगा: {text}।"
+            if lang == "hinglish":
+                label = SpideyAgent._hi_when_label(at, "hinglish")
+                return f"Ho gaya! {label}yaad dila dunga: {text}."
             return (
                 f"Reminder set: {text}" + (f" (at {at})" if at else "") + "."
                 " Consider it handled, sir."
@@ -1101,20 +1727,36 @@ class SpideyAgent:
                     + (f" (at {r['remind_at']})" if r.get("remind_at") else "")
                     for r in reminders
                 )
-                return f"Your reminders:\n{lines}"
-            return "No reminders yet — say 'remind me to ...' to add one."
+                return pick(
+                    f"Your reminders:\n{lines}",
+                    f"Aapke reminders:\n{lines}",
+                    f"आपके रिमाइंडर:\n{lines}",
+                )
+            return pick(
+                "No reminders yet — say 'remind me to ...' to add one.",
+                "Abhi koi reminder nahi hai — 'yaad dila dena' bolo.",
+                "अभी कोई रिमाइंडर नहीं है।",
+            )
         if intent == "reminder_complete":
             reminder = tool_results.get("reminders", {}).get(
                 "reminder"
             ) or tool_results.get("tasks", {}).get("task", {})
             text = reminder.get("text") or reminder.get("title", "")
-            return f'Reminder done: "{text}".'
+            return pick(
+                f'Reminder done: "{text}".',
+                f'Reminder ho gaya: "{text}".',
+                f'रिमाइंडर पूरा: "{text}"।',
+            )
         if intent == "reminder_delete":
             deleted = tool_results.get("reminders", {}) or tool_results.get(
                 "tasks", {}
             )
             text = deleted.get("text") or deleted.get("title", "")
-            return f'Deleted the reminder "{text}".'
+            return pick(
+                f'Deleted the reminder "{text}".',
+                f'Reminder delete kar diya: "{text}".',
+                f'रिमाइंडर हटा दिया: "{text}"।',
+            )
         if intent == "web_search":
             search = tool_results.get("search", {})
             if search.get("error"):

@@ -1,6 +1,7 @@
 import asyncio
 import json
 from datetime import datetime, timedelta, timezone
+from inspect import Parameter, signature
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
@@ -35,6 +36,9 @@ class ChatRequest(BaseModel):
     # Recent conversation turns for continuity (pronoun resolution). Bounded
     # to the last 10 in post_chat before reaching the agent.
     history: list[dict] = []
+    # Reply language: "auto" detects per message ('en'|'hi'|'hinglish');
+    # any other value forces it ('hindi' normalizes to 'hi').
+    lang: str = "auto"
 
 
 class MemoryCreateRequest(BaseModel):
@@ -86,14 +90,100 @@ async def post_chat(req: ChatRequest):
         asyncio.create_task(_execute_pending(run.workflow_id, pending, history))
         return {"run_id": run.workflow_id}
     run = engine.create_run(req.message)
-    asyncio.create_task(_execute(run.workflow_id, req.message, history))
+    asyncio.create_task(_execute(run.workflow_id, req.message, history, req.lang))
     return {"run_id": run.workflow_id}
 
 
-async def _execute(run_id: str, message: str, history: list[dict] | None = None):
+async def _stream_events(run, message, history, lang, confirmed_pending=None):
+    """Bridge agent.run_stream emit() calls to SSE frames.
+
+    Event contract: ``event: <type>\\ndata: <json>\\n\\n`` with types
+    ``state`` | ``voice_summary`` | ``delta`` | ``done`` | ``error``.
+    Keep-alive ``: ping`` comments every 15s while the run is quiet.
+    """
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def emit(event_type: str, data: dict):
+        await queue.put((event_type, data))
+
+    async def worker():
+        try:
+            if confirmed_pending is not None:
+                await agent.run_stream_confirmed(
+                    confirmed_pending, run, engine, history=history, emit=emit
+                )
+            else:
+                await agent.run_stream(
+                    message, run, engine, history=history, lang=lang, emit=emit
+                )
+        finally:
+            await queue.put((None, None))  # sentinel: stream is over
+
+    task = asyncio.create_task(worker())
+    try:
+        while True:
+            try:
+                event_type, data = await asyncio.wait_for(queue.get(), timeout=15)
+            except asyncio.TimeoutError:
+                yield ": ping\n\n"
+                continue
+            if event_type is None:
+                break
+            yield f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+    finally:
+        if not task.done():
+            task.cancel()
+
+
+@router.post("/api/chat/stream")
+async def post_chat_stream(req: ChatRequest):
+    """Streaming chat: Server-Sent Events for the agent run.
+
+    Accepts the same ChatRequest (message/history/lang/confirm_token).
+    POST /api/chat is unchanged; this is a parallel streaming variant.
+    """
+    history = [
+        {"role": h.get("role"), "content": h.get("content", "")}
+        for h in (req.history or [])
+        if isinstance(h, dict) and h.get("role") in ("user", "assistant")
+    ][-10:]
+    if req.confirm_token:
+        # Confirmed pending action, streamed: same events, pre-resolved tool.
+        try:
+            pending = agent.pop_pending(req.confirm_token)
+        except ToolError as exc:
+            raise HTTPException(400, exc.user_message)
+        run = engine.create_run(f"confirmed: {pending['proposal']}")
+        return StreamingResponse(
+            _stream_events(run, "", history, req.lang, confirmed_pending=pending),
+            media_type="text/event-stream",
+        )
+    run = engine.create_run(req.message)
+    return StreamingResponse(
+        _stream_events(run, req.message, history, req.lang),
+        media_type="text/event-stream",
+    )
+
+
+async def _execute(
+    run_id: str, message: str, history: list[dict] | None = None, lang: str = "auto"
+):
     run = engine.get_run(run_id)
     try:
-        response = await agent.run(message, run, engine, history=history)
+        # Backward compat: test doubles of the agent may predate ``lang``.
+        try:
+            params = signature(agent.run).parameters
+            takes_lang = "lang" in params or any(
+                p.kind == Parameter.VAR_KEYWORD for p in params.values()
+            )
+        except (TypeError, ValueError):
+            takes_lang = False
+        if takes_lang:
+            response = await agent.run(
+                message, run, engine, history=history, lang=lang
+            )
+        else:
+            response = await agent.run(message, run, engine, history=history)
         # Agent normally finishes the run itself; this is a safety net.
         if engine.get_run(run_id).status == "running":
             engine.finish_run(run_id, "completed", result=response)

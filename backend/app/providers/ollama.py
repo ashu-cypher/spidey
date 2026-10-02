@@ -13,6 +13,19 @@ _JARVIS_SYSTEM_PROMPT = (
 )
 
 
+def _system_prompt_for(lang: str | None) -> str:
+    """JARVIS persona prompt, optionally answering in the user's language."""
+    prompt = _JARVIS_SYSTEM_PROMPT
+    if lang == "hi":
+        prompt += " Respond in Hindi using Devanagari script."
+    elif lang == "hinglish":
+        prompt += (
+            " Respond in Hinglish — Hindi written in Latin (Roman) script, "
+            "the way people text in India."
+        )
+    return prompt
+
+
 class OllamaProvider(AIProvider):
     name = "ollama"
 
@@ -38,11 +51,46 @@ class OllamaProvider(AIProvider):
                 f"Ollama is not reachable at {self.base_url}: {exc}"
             ) from exc
 
+    async def _chat_stream(self, messages: list):
+        """Yield ``message.content`` from each NDJSON line of /api/chat."""
+        import json
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                async with client.stream(
+                    "POST",
+                    f"{self.base_url}/api/chat",
+                    json={
+                        "model": self.model,
+                        "messages": messages,
+                        "stream": True,
+                    },
+                ) as resp:
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            data = json.loads(line)
+                        except ValueError:
+                            continue
+                        content = (data.get("message") or {}).get("content")
+                        if content:
+                            yield content
+                        if data.get("done"):
+                            break
+        except Exception as exc:
+            raise ProviderError(
+                f"Ollama is not reachable at {self.base_url}: {exc}"
+            ) from exc
+
     async def aclassify_intent(
-        self, text: str, history: list | None = None
+        self, text: str, history: list | None = None, lang: str | None = None
     ) -> dict:
         import json
 
+        # Intent labels are language-agnostic; ``lang`` accepted for symmetry.
         content = await self._chat(
             [
                 {
@@ -63,10 +111,33 @@ class OllamaProvider(AIProvider):
             raise ProviderError(f"Ollama returned invalid JSON: {exc}") from exc
 
     async def agenerate(
-        self, text: str, context: str = "", history: list | None = None
+        self,
+        text: str,
+        context: str = "",
+        history: list | None = None,
+        lang: str | None = None,
     ) -> str:
+        messages = self._messages(text, context, history, lang)
+        return await self._chat(messages)
+
+    async def agenerate_stream(
+        self,
+        message: str,
+        context: str = "",
+        history: list | None = None,
+        lang: str | None = None,
+    ):
+        """Stream /api/chat NDJSON ``message.content`` chunks."""
+        messages = self._messages(message, context, history, lang)
+        async for chunk in self._chat_stream(messages):
+            yield chunk
+
+    @staticmethod
+    def _messages(
+        text: str, context: str, history: list | None, lang: str | None
+    ) -> list:
         user_text = f"{context}\n\nUser: {text}" if context else text
-        messages = [{"role": "system", "content": _JARVIS_SYSTEM_PROMPT}]
+        messages = [{"role": "system", "content": _system_prompt_for(lang)}]
         # Recent conversation turns so pronouns ("it", "that") resolve.
         for turn in (history or [])[-10:]:
             if not isinstance(turn, dict):
@@ -75,4 +146,4 @@ class OllamaProvider(AIProvider):
             if role in ("user", "assistant") and content:
                 messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": user_text})
-        return await self._chat(messages)
+        return messages

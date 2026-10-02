@@ -23,7 +23,17 @@ def _utcnow() -> datetime:
 
 
 def parse_reminder_at(text: str) -> datetime:
-    """Parse simple time expressions; default is tomorrow 9am when vague."""
+    """Parse simple time expressions; default is tomorrow 9am when vague.
+
+    Hindi/Hinglish is supported deterministically: "kal (9 baje)?" ->
+    tomorrow, "parso" -> the day after tomorrow, "aaj raat" -> today 20:00
+    ("aaj raat 9 baje" = 21:00, the hour read as PM), and a bare
+    "(\\d{1,2}) baje" -> that hour today, else tomorrow (same rollover as
+    the English "at 5pm").
+
+    NOTE: all times are resolved against the SERVER clock
+    (``datetime.now(timezone.utc)``), not the user's timezone.
+    """
     lowered = (text or "").lower()
     now = _utcnow()
 
@@ -59,6 +69,34 @@ def parse_reminder_at(text: str) -> datetime:
         base = base.replace(hour=9, minute=0, second=0, microsecond=0)
         explicit_time = True
 
+    if not explicit_time:
+        # Hindi/Hinglish time expressions (server clock, see docstring).
+        hi_baje = re.search(r"\b(\d{1,2})\s*baje\b", lowered)
+        hi_hour = int(hi_baje.group(1)) % 24 if hi_baje else None
+        is_kal = re.search(r"\bkal\b", lowered) is not None
+        is_parso = re.search(r"\bparso\b", lowered) is not None
+        is_aaj_raat = re.search(r"\baaj\s+raat\b", lowered) is not None
+        if is_aaj_raat:
+            # "raat" means night: a bare hour is PM ("aaj raat 9 baje" = 21:00).
+            hour = hi_hour if hi_hour is not None else 20
+            if hi_hour is not None and hi_hour < 12:
+                hour += 12
+            return now.replace(hour=hour, minute=0, second=0, microsecond=0)
+        if is_kal or is_parso:
+            days = 2 if is_parso else 1
+            hour = hi_hour if hi_hour is not None else 9
+            target = now + timedelta(days=days)
+            return target.replace(hour=hour, minute=0, second=0, microsecond=0)
+        if hi_hour is not None:
+            # Bare "N baje": that hour today, else tomorrow — mirrors the
+            # English "at 5pm" rollover below.
+            target = now.replace(
+                hour=hi_hour, minute=0, second=0, microsecond=0
+            )
+            if target <= now:
+                target = target + timedelta(days=1)
+            return target
+
     if "tomorrow" in lowered:
         target = now + timedelta(days=1)
         if explicit_time:
@@ -81,19 +119,30 @@ def parse_reminder_at(text: str) -> datetime:
 
 
 def extract_reminder_title(text: str) -> str:
-    """Pull the reminder subject out of e.g. 'remind me to call mom tomorrow'."""
+    """Pull the reminder subject out of e.g. 'remind me to call mom tomorrow'.
+
+    Hindi/Hinglish ("bhai kal 9 baje mujhe assignment yaad dila dena" ->
+    "assignment"): the subject is whatever sits between the stripped
+    vocatives/time expressions and the yaad-dila verb phrase.
+    """
+    text = text or ""
     # Relative/absolute phrasing: "remind me in 20 minutes to study",
     # "remind me at 5pm to call mom" — the subject follows the final "to".
     m = re.search(
         r"remind me (?:in\s+\d+\s+(?:hours?|minutes?|days?)"
         r"|at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+to\s+(.+)",
-        text or "",
+        text,
         re.IGNORECASE | re.DOTALL,
     )
     if m:
         return m.group(1).strip().rstrip(".") or "Untitled reminder"
-    m = re.search(r"remind me to\s+(.+)", text or "", re.IGNORECASE | re.DOTALL)
-    body = m.group(1).strip() if m else (text or "").strip()
+    m = re.search(r"remind me to\s+(.+)", text, re.IGNORECASE | re.DOTALL)
+    if m:
+        body = m.group(1).strip()
+    elif re.search(r"yaad\s+dila(na|o|dena)?", text, re.IGNORECASE):
+        return _extract_hindi_reminder_title(text)
+    else:
+        body = text.strip()
     body = re.sub(
         r"\s+(tomorrow|today|tonight)(\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?\s*$",
         "",
@@ -113,6 +162,32 @@ def extract_reminder_title(text: str) -> str:
     # subject — don't leave "remind me" as the title.
     body = re.sub(r"^remind me\s*$", "", body, flags=re.IGNORECASE)
     return body.strip().rstrip(".") or "Untitled reminder"
+
+
+def _extract_hindi_reminder_title(text: str) -> str:
+    """Subject for Hindi/Hinglish yaad-dila phrasing.
+
+    "bhai kal 9 baje mujhe assignment yaad dila dena" -> "assignment":
+    strip leading vocatives (bhai, didi, yaar), day words and "N baje"
+    time expressions, and "mujhe/mujhko", then take what precedes the
+    yaad-dila verb phrase.
+    """
+    m = re.search(r"yaad\s+dila(na|o|dena)?", text, re.IGNORECASE)
+    before = text[: m.start()] if m else text
+    subj = before.strip()
+    subj = re.sub(
+        r"^(bhai|didi|yaar|arre|sun|suniye)\b[,\s]*", "", subj, flags=re.IGNORECASE
+    )
+    subj = re.sub(
+        r"\b(kal|parso|aaj)(\s+raat)?\b(\s+\d{1,2}\s*baje)?",
+        "",
+        subj,
+        flags=re.IGNORECASE,
+    )
+    subj = re.sub(r"\b\d{1,2}\s*baje\b", "", subj, flags=re.IGNORECASE)
+    subj = re.sub(r"\b(mujhe|mujhko|mereko)\b", "", subj, flags=re.IGNORECASE)
+    subj = re.sub(r"\s+", " ", subj).strip().rstrip(".")
+    return subj or "Untitled reminder"
 
 
 def _coerce_remind_at(value: object) -> datetime | None:
