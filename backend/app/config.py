@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     vector_backend: str = "local"
     spidey_debug: bool = False
     persona_name: str = "MEW"  # reads PERSONA_NAME
+    # Telegram integration (spec 18-19): bot token and chat ID live ONLY
+    # here (backend env), never in frontend code.
+    telegram_bot_token: str = ""  # reads TELEGRAM_BOT_TOKEN
+    telegram_chat_id: str = ""  # reads TELEGRAM_CHAT_ID
 
 
 settings = Settings()

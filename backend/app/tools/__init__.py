@@ -13,6 +13,7 @@ from app.tools.search import SearchTool
 from app.tools.shell import ShellTool
 from app.tools.system_controller import SystemControllerTool
 from app.tools.tasks import TaskTool
+from app.tools.wikipedia import WikipediaTool
 
 __all__ = [
     "AttachmentTool",
@@ -32,6 +33,7 @@ __all__ = [
     "TaskTool",
     "ToolError",
     "TOOL_REGISTRY",
+    "WikipediaTool",
 ]
 
 TOOL_REGISTRY: dict[str, BaseTool] = {
@@ -45,6 +47,7 @@ TOOL_REGISTRY: dict[str, BaseTool] = {
     "search": SearchTool(),
     "research": ResearchTool(),
     "briefing": BriefingTool(),
+    "wikipedia": WikipediaTool(),
     "documents": DocumentTool(),
     "code": CodeTool(),
     # Registered but always refuses: the classifier must never route here.

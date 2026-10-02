@@ -68,6 +68,7 @@ _VERIFY_KEYS: dict[str, tuple[str, ...]] = {
     "search": ("results", "error"),
     "research": ("report", "error"),
     "briefing": ("briefing", "error"),
+    "wikipedia": ("article", "error"),
     "documents": ("document", "documents", "deleted"),
     "code": ("explanation",),
     "system": ("cpu_percent", "action", "needs_confirmation"),
@@ -198,6 +199,7 @@ _TOOL_NARRATION = {
     "search": "Searching the web…",
     "research": "Deep researching…",
     "briefing": "Preparing your briefing…",
+    "wikipedia": "Looking up Wikipedia…",
     "rag": "Searching your documents…",
     "documents": "Working with your documents…",
     "code": "Reading the code…",
@@ -2377,6 +2379,8 @@ class SpideyAgent:
             return {"topic": message}
         if tool == "briefing":
             return {}
+        if tool == "wikipedia":
+            return {"topic": message}
         if tool == "system":
             # The rule-based intent system_status only ever requests metrics;
             # destructive phrasing is never routed to this tool.
@@ -2959,6 +2963,19 @@ class SpideyAgent:
             if not text:
                 return "I couldn't put together a briefing right now."
             return text
+        if intent == "wikipedia":
+            wiki = tool_results.get("wikipedia", {})
+            if wiki.get("error"):
+                return wiki["error"]
+            article = wiki.get("article", "")
+            if not article:
+                return "I couldn't find that on Wikipedia."
+            title = wiki.get("title", "")
+            url = wiki.get("url", "")
+            header = f"From Wikipedia — **{title}**"
+            if url:
+                header += f" ({url})"
+            return f"{header}:\n\n{article}"
         if intent == "document_create":
             doc = tool_results.get("documents", {}).get("document", {})
             return (
@@ -2995,7 +3012,33 @@ class SpideyAgent:
             lines.extend(f"- {o}" for o in code.get("observations", []))
             return "\n".join(line for line in lines if line)
         if intent in ("knowledge_search", "summarize_document"):
-            return SpideyAgent._compose_rag_facts(tool_results)
+            # MEW fix: conversation attachments are PRIMARY for
+            # summarize_document. Uploaded files go to attachments (via
+            # /api/chat/attach), not the RAG index — the old code only
+            # checked RAG, so "summarize this" failed even with a file
+            # attached. RAG supplements when available.
+            parts: list[str] = []
+            if intent == "summarize_document" and attachments:
+                pretty = re.sub(
+                    r"\[Attachment: ([^\]]+?) \([a-z]+\)\]",
+                    r"From `\1`:",
+                    attachments,
+                )
+                parts.append(pretty)
+            rag_facts = SpideyAgent._compose_rag_facts(tool_results)
+            if rag_facts != LOW_CONFIDENCE_REPLY:
+                parts.append(rag_facts)
+            if parts:
+                return "\n\n".join(parts)
+            if intent == "summarize_document":
+                return pick(
+                    "There's no document attached to summarize — attach a "
+                    "file first, and I'll summarize it.",
+                    "Summarize karne ke liye koi document attach nahi hai — "
+                    "pehle koi file attach karo.",
+                    "सारांश के लिए कोई दस्तावेज़ अटैच नहीं है — पहले कोई फ़ाइल अटैच करें।",
+                )
+            return LOW_CONFIDENCE_REPLY
         if intent == "document_qa":
             # MEW upgrade: the conversation's attachments are the primary
             # context; RAG passages supplement only when the confidence gate

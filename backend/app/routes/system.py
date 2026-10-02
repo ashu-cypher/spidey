@@ -65,6 +65,15 @@ def _rag_state() -> str:
     return "ready" if settings.vector_backend == "pgvector" else "degraded"
 
 
+def _telegram_state() -> dict:
+    """Honest Telegram state: configured only when env vars are set.
+    'connected' is only reported after a live test_connection() call —
+    this status endpoint does not claim it without checking."""
+    from app.services.telegram import status as tg_status
+
+    return tg_status()
+
+
 def _model_display(provider: str, model: str | None, degraded: bool) -> str:
     """Honest header label for the MODEL readout.
 
@@ -143,6 +152,7 @@ async def system_status():
         "memory": _memory_state(),
         "voice": {"stt": "browser", "tts": "browser"},
         "rag": _rag_state(),
+        "telegram": _telegram_state(),
         "uptime_s": int(time.time() - _STARTED_AT),
     }
 
@@ -206,3 +216,16 @@ async def set_provider_info(req: ProviderUpdate):
         "model": effective_model(selection["provider"], selection.get("model")),
         "available_providers": list(AVAILABLE_PROVIDERS),
     }
+
+
+@router.post("/api/system/telegram/test")
+async def test_telegram():
+    """Test the Telegram bot connection (getMe).
+
+    Returns the honest result: connected, not configured, or the real
+    error. Never claims success unless Telegram's API confirms it.
+    """
+    from app.services.telegram import test_connection
+
+    ok, message = await test_connection()
+    return {"ok": ok, "message": message}

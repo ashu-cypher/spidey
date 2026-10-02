@@ -20,8 +20,13 @@ async def _reminder_poller() -> None:
     Never raises out of the loop: a DB hiccup is logged and the next tick
     retries. ``list_due()`` marks claimed rows notified=True, so each due
     reminder is published exactly once.
+
+    MEW Telegram integration (spec 18): due reminders are ALSO sent via
+    Telegram when configured. Telegram delivery is honest — the event
+    records whether Telegram actually confirmed delivery.
     """
     from app.services.event_bus import publish
+    from app.services.telegram import is_configured, send_reminder
     from app.tools.reminders import ReminderTool
 
     tool = ReminderTool()
@@ -29,7 +34,21 @@ async def _reminder_poller() -> None:
         await asyncio.sleep(_REMINDER_POLL_SECONDS)
         try:
             for item in tool.list_due():
-                publish({"type": "reminder_due", "reminder": item})
+                telegram_sent = False
+                telegram_error: str | None = None
+                if is_configured():
+                    sent, msg = await send_reminder(item.get("title", ""))
+                    telegram_sent = sent
+                    if not sent:
+                        telegram_error = msg
+                publish(
+                    {
+                        "type": "reminder_due",
+                        "reminder": item,
+                        "telegram_sent": telegram_sent,
+                        "telegram_error": telegram_error,
+                    }
+                )
         except asyncio.CancelledError:
             raise
         except Exception:

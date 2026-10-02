@@ -87,12 +87,23 @@ def _extract_pdf(data: bytes) -> str:
     except Exception:
         raise ToolError("That PDF couldn't be opened — it may be corrupted.")
     pages: list[str] = []
-    for page in reader.pages:
+    for i, page in enumerate(reader.pages):
         try:
-            pages.append(page.extract_text() or "")
+            text = page.extract_text() or ""
         except Exception:
             continue
-    return "\n\n".join(pages)
+        if text.strip():
+            pages.append(f"[Page {i + 1}]\n{text}")
+    text = "\n\n".join(pages).strip()
+    if not text:
+        # Scanned/image PDF: no extractable text, and no OCR is configured.
+        # Be honest instead of pretending.
+        raise ToolError(
+            "I received the PDF, but it has no extractable text — it's "
+            "likely a scanned document. OCR isn't configured, so I can't "
+            "read it yet."
+        )
+    return text
 
 
 def _extract_docx(data: bytes) -> str:
@@ -104,7 +115,37 @@ def _extract_docx(data: bytes) -> str:
         doc = DocxDocument(io.BytesIO(data))
     except Exception:
         raise ToolError("That .docx file couldn't be opened — it may be corrupted.")
-    return "\n\n".join(p.text for p in doc.paragraphs if p.text and p.text.strip())
+    parts: list[str] = []
+    # Paragraphs with heading structure preserved.
+    for p in doc.paragraphs:
+        text = (p.text or "").strip()
+        if not text:
+            continue
+        style = (p.style.name or "").lower()
+        if style.startswith("heading"):
+            level = "".join(c for c in style if c.isdigit()) or "1"
+            parts.append(f"\n{'#' * int(level)} {text}\n")
+        else:
+            parts.append(text)
+    # Tables: render as markdown tables.
+    for table in doc.tables:
+        rows = []
+        for row in table.rows:
+            cells = [(c.text or "").strip().replace("\n", " ") for c in row.cells]
+            if any(cells):
+                rows.append(cells)
+        if rows:
+            parts.append("")
+            # Header row + separator
+            parts.append("| " + " | ".join(rows[0]) + " |")
+            parts.append("| " + " | ".join("---" for _ in rows[0]) + " |")
+            for r in rows[1:]:
+                parts.append("| " + " | ".join(r) + " |")
+            parts.append("")
+    text = "\n".join(parts).strip()
+    if not text:
+        raise ToolError("That .docx file had no readable text.")
+    return text
 
 
 def _extract_text(data: bytes) -> str:

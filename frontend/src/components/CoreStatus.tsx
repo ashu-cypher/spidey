@@ -21,6 +21,7 @@ interface View {
   modelDisplay: string | null;
   modelDegraded: boolean;
   memory: string | null;
+  telegram: { configured: boolean; state: string } | null;
 }
 
 function Row({ label, value, ok }: { label: string; value: string; ok: boolean | null }) {
@@ -43,6 +44,7 @@ export function CoreStatus() {
     modelDisplay: null,
     modelDegraded: false,
     memory: null,
+    telegram: null,
   });
 
   useEffect(() => {
@@ -63,6 +65,7 @@ export function CoreStatus() {
           modelDisplay: null,
           modelDegraded: false,
           memory: null,
+          telegram: null,
         });
       } else {
         setView({
@@ -72,6 +75,7 @@ export function CoreStatus() {
           modelDisplay: info.model_display || null,
           modelDegraded: info.model_degraded === true,
           memory: info.memory || null,
+          telegram: info.telegram || null,
         });
       }
     };
@@ -104,6 +108,15 @@ export function CoreStatus() {
           [view.provider, view.model].filter(Boolean).join('/').toUpperCase() ||
           'UNKNOWN');
 
+  // Telegram: honest state from the backend. Only "CONNECTED" after a live
+  // test; "NOT CONFIGURED" when env vars are missing; "—" when offline.
+  const telegramLabel =
+    view.online !== true
+      ? '—'
+      : view.telegram?.state === 'configured'
+        ? 'READY'
+        : 'NOT CONFIGURED';
+
   return (
     <div className="mew-core-status" role="status" aria-label="MEW core status">
       <Row
@@ -135,6 +148,11 @@ export function CoreStatus() {
         label="VOICE"
         value={voiceLabel}
         ok={null}
+      />
+      <Row
+        label="TELEGRAM"
+        value={telegramLabel}
+        ok={view.online === true ? (view.telegram?.configured ? true : null) : null}
       />
     </div>
   );

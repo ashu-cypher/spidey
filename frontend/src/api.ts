@@ -441,6 +441,8 @@ export interface SystemStatusInfo {
   /** Server-side descriptor (STT/TTS run in the browser). */
   voice: { stt: string; tts: string } | null;
   rag: string;
+  /** Telegram state: {configured, state} — honest, never faked. */
+  telegram?: { configured: boolean; state: string } | null;
 }
 
 export async function getSystemStatus(): Promise<SystemStatusInfo> {

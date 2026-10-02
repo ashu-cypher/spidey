@@ -106,6 +106,13 @@ _NEWS = re.compile(
     r"|\btell\s+me\s+(the\s+)?(top\s+|latest\s+)?news\b",
     re.IGNORECASE,
 )
+# Wikipedia: explicit "using Wikipedia"/"on Wikipedia"/"wiki" requests.
+# (Plain "who was X" stays web_search for fresher results.)
+_WIKIPEDIA = re.compile(
+    r"\bwikipedia\b"
+    r"|\bwiki\b",
+    re.IGNORECASE,
+)
 _DOCUMENT_CREATE = re.compile(
     r"\b(create|make|write)\b.{0,25}\b(documents?|notes?)\b", re.IGNORECASE
 )
@@ -716,6 +723,14 @@ class RuleBasedProvider(AIProvider):
                 "requires_memory": False,
                 "requires_tools": True,
                 "tools": ["briefing"],
+                "response_mode": "answer",
+            }
+        if _WIKIPEDIA.search(text):
+            return {
+                "intent": "wikipedia",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["wikipedia"],
                 "response_mode": "answer",
             }
         if _NEWS.search(text):
