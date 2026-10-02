@@ -343,6 +343,8 @@ async def test_phase5_intents():
         "deep dive into AI safety": ("deep_research", "research"),
         "brief me": ("briefing", "briefing"),
         "morning briefing": ("briefing", "briefing"),
+        "tell me top 5 news": ("web_search", "search"),
+        "latest news": ("web_search", "search"),
         "create a document titled Notes with content hello": (
             "document_create",
             "documents",

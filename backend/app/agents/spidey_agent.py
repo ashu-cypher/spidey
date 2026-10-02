@@ -2362,7 +2362,17 @@ class SpideyAgent:
                 return args
             return {"action": "list"}
         if tool == "search":
-            return {"query": self._extract_search_query(message)}
+            args = {"query": self._extract_search_query(message)}
+            # News queries get news mode for labeled results.
+            import re as _re
+
+            if _re.search(
+                r"\b(top\s+\d+\s+news|latest\s+news|news\s+today|headlines)\b",
+                message,
+                _re.IGNORECASE,
+            ):
+                args["mode"] = "news"
+            return args
         if tool == "research":
             return {"topic": message}
         if tool == "briefing":

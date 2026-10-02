@@ -95,6 +95,17 @@ _BRIEFING = re.compile(
     r"|\bwhat's\s+on\s+(my\s+)?(schedule|agenda)\b",
     re.IGNORECASE,
 )
+# News: "top 5 news", "latest news", "headlines", "news today" —
+# these don't always contain the word "search".
+_NEWS = re.compile(
+    r"\btop\s+\d+\s+news\b"
+    r"|\blatest\s+news\b"
+    r"|\bnews\s+today\b"
+    r"|\btoday's\s+news\b"
+    r"|\bheadlines\b"
+    r"|\btell\s+me\s+(the\s+)?(top\s+|latest\s+)?news\b",
+    re.IGNORECASE,
+)
 _DOCUMENT_CREATE = re.compile(
     r"\b(create|make|write)\b.{0,25}\b(documents?|notes?)\b", re.IGNORECASE
 )
@@ -707,6 +718,15 @@ class RuleBasedProvider(AIProvider):
                 "tools": ["briefing"],
                 "response_mode": "answer",
             }
+        if _NEWS.search(text):
+            return {
+                "intent": "web_search",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["search"],
+                "response_mode": "answer",
+                "news_mode": True,
+            }
         if _WEB_SEARCH.search(text):
             return {
                 "intent": "web_search",
@@ -916,6 +936,35 @@ class RuleBasedProvider(AIProvider):
                     f"यह मेरी जानकारी में नहीं है — क्या मैं वेब पर '{topic}' "
                     "खोजूँ? बस कहिए।",
                 )
+        # Smart fallback: try to be useful instead of the generic
+        # "something more concrete". Detect question-like input and offer
+        # a web search; detect frustration and be empathetic.
+        if re.search(r"\b(argh+|ugh+|damn|stupid|useless)\b", text, re.IGNORECASE):
+            return pick(
+                "Hey, I hear you — I'm running in limited mode right now "
+                "(no AI model connected). I can still search the web, manage "
+                "tasks and reminders, and do calculations. What do you need?",
+                "Samajh gaya, thoda frustrating hai — main abhi limited mode "
+                "mein hoon. Phir bhi web search, tasks, reminders aur "
+                "calculation kar sakta hoon. Bolo, kya chahiye?",
+                "समझ गया — मैं अभी सीमित मोड में हूँ। फिर भी वेब खोज, कार्य, "
+                "रिमाइंडर और गणना कर सकता हूँ। बताइए, क्या चाहिए?",
+            )
+        # Question-like but unclassified: offer web search honestly.
+        if text.strip().endswith("?") or re.search(
+            r"\b(what|who|when|where|why|how|which|tell\s+me|show\s+me)\b",
+            text,
+            re.IGNORECASE,
+        ):
+            topic = _extract_topic(text) or text.strip()[:60]
+            return pick(
+                f"That's a good question. I can search the web for '{topic}' — "
+                f"just say 'search the web for {topic}'.",
+                f"Achha sawal hai. Main web par '{topic}' search kar sakta "
+                f"hoon — bas bolo 'search the web for {topic}'.",
+                f"अच्छा सवाल है। मैं वेब पर '{topic}' खोज सकता हूँ — बस कहिए "
+                f"'search the web for {topic}'।",
+            )
         return pick(
             "Got it — though I'll need something more concrete. "
             "A calculation, something to remember, or a task, perhaps?",
