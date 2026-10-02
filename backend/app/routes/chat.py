@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import re
 from datetime import datetime, timedelta, timezone
@@ -195,6 +196,10 @@ async def post_chat_stream(req: ChatRequest):
 # (app.rag.pipeline: validate_upload + extract_text) — no duplicated parsers.
 _ATTACH_TEXT_LIMIT = 8000  # extracted_text is bounded at write time
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+# MEW Phase 2 — image bytes are stored (base64) so a vision-capable model
+# can receive them via the Ollama /api/generate `images` array. Raw cap:
+# 5 MB keeps the row (and the base64 ~4/3 inflation) sane.
+_IMAGE_BYTES_LIMIT = 5 * 1024 * 1024
 
 # A file counts as a resume when its name says so, when the resume tool's
 # own section detector finds at least two real CV sections in the extracted
@@ -237,8 +242,9 @@ async def attach_file(
     optional ``message`` (str — accepted for future use, not stored).
     Text is extracted with the RAG pipeline's extractors (.pdf/.docx/.txt/
     .md, 10 MB cap) and bounded to ~8k chars at write time. Images are
-    accepted but only the filename is stored: this backend has no vision
-    model, so the image content is never read.
+    accepted and their bytes are stored (base64, 5 MB cap) so a
+    vision-capable model can analyze them; a text-only model answers
+    honestly that it cannot see the image (spec 18).
 
     Returns ``{id, conversation_id, filename, kind, created_at}`` where
     kind is 'document' | 'resume' | 'image'.
@@ -248,14 +254,18 @@ async def attach_file(
     if not data:
         raise HTTPException(422, "The uploaded file is empty.")
     ext = Path(filename).suffix.lower()
+    data_b64: str | None = None
     if ext in _IMAGE_EXTENSIONS:
         kind = "image"
-        # Honest: no vision model — the image bytes are never read.
-        text = (
-            f"[Image attachment: {filename}. This backend has no vision "
-            f"model, so only the filename was stored — the image content "
-            f"was not read.]"
-        )
+        if len(data) > _IMAGE_BYTES_LIMIT:
+            raise HTTPException(
+                422,
+                "Image is too large — the limit is 5 MB.",
+            )
+        # The bytes ARE stored now (MEW Phase 2): a vision-capable model
+        # receives them in the /api/generate `images` array.
+        data_b64 = base64.b64encode(data).decode("ascii")
+        text = f"[Image attachment: {filename}.]"
     else:
         try:
             ext = validate_upload(filename, data)
@@ -272,6 +282,7 @@ async def attach_file(
             filename=filename,
             kind=kind,
             extracted_text=text[:_ATTACH_TEXT_LIMIT],
+            data_base64=data_b64,
         )
         session.add(row)
         session.flush()

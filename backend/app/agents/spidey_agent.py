@@ -14,10 +14,15 @@ from app.agents.memory_manager import MemoryManager
 from app.agents.planner import build_plan
 from app.config import settings
 from app.database import get_session
-from app.models import ConversationAttachment, ToolCall, WorkflowRun as WorkflowRunRow
+from app.models import (
+    ConversationAttachment,
+    ToolCall,
+    UserProfile,
+    WorkflowRun as WorkflowRunRow,
+)
 from app.providers.base import AIProvider, ProviderError
 from app.providers.manager import LLM_PROVIDER_NAMES, degraded_notice_once
-from app.providers.rule_based import RuleBasedProvider
+from app.providers.rule_based import RuleBasedProvider, _extract_topic
 from app.services.language import (
     detect_language,
     make_voice_summary,
@@ -54,12 +59,13 @@ NO_CV_REPLY = "I don't have your CV yet — upload it in the Resume tab."
 
 _VERIFY_KEYS: dict[str, tuple[str, ...]] = {
     "calculator": ("result",),
-    "memory": ("results", "saved"),
+    "memory": ("results", "saved", "forgot", "deleted", "memories", "error"),
+    "attachments": ("attachments", "matches", "deleted", "error"),
     "tasks": ("task", "tasks", "deleted"),
     "reminders": ("reminder", "reminders", "deleted"),
-    "rag": ("results", "documents"),
+    "rag": ("results", "documents", "error"),
     "resume": ("analysis", "suggestions", "job_match", "versions", "version"),
-    "search": ("results",),
+    "search": ("results", "error"),
     "documents": ("document", "documents", "deleted"),
     "code": ("explanation",),
     "system": ("cpu_percent", "action", "needs_confirmation"),
@@ -143,6 +149,21 @@ _PROMPT_OUTPUT = [
 
 LOW_CONFIDENCE_REPLY = (
     "I couldn't find enough information in your documents to answer that reliably."
+)
+
+# MEW Phase 2 — vision gate (spec section 18). A message matching this while
+# the conversation holds an image attachment is an image question. The exact
+# honest reply for a text-only model (never pretend to see the image).
+_IMAGE_ASK = re.compile(
+    r"\bwhat(?:'s|\s+is)\s+in\s+(this|the|that)\s+(image|picture|photo|pic)\b"
+    r"|\bdescribe\b.{0,25}\b(this|the|that)?\s*(image|picture|photo|pic)\b"
+    r"|\b(analy[sz]e|look\s+at|see|show\s+me)\b.{0,25}"
+    r"\b(this|the|that)?\s*(image|picture|photo|pic)\b",
+    re.IGNORECASE,
+)
+VISION_UNSUPPORTED_REPLY = (
+    "I can't analyze images with the current model — it doesn't support "
+    "vision. Pull a vision model like llava to enable this."
 )
 
 # MEW capability upgrade — per-workload routing. Intents whose reply is
@@ -302,7 +323,13 @@ class SpideyAgent:
     @staticmethod
     def _proposal(tool_name: str, args: dict, lang: str = "en") -> str:
         action = args.get("action")
-        title = args.get("title") or args.get("text") or args.get("id") or "this item"
+        title = (
+            args.get("title")
+            or args.get("filename")
+            or args.get("text")
+            or args.get("id")
+            or "this item"
+        )
         if lang == "hi":
             if tool_name == "tasks" and action == "delete":
                 return f'टास्क "{title}" हटा दूँ?'
@@ -312,6 +339,10 @@ class SpideyAgent:
                 return f'दस्तावेज़ "{title}" हटा दूँ?'
             if tool_name == "memory" and action == "delete":
                 return f'यह याददाश्त हटा दूँ: "{str(title)[:80]}"?'
+            if tool_name == "memory" and action == "delete_all":
+                return "मेरी सारी यादें हटा दूँ? यह वापस नहीं आएगा।"
+            if tool_name == "attachments" and action == "delete":
+                return f'अटैच की गई फ़ाइल "{title}" हटा दूँ?'
             if tool_name == "system":
                 # The tool's own proposal wording is mirrored here so the chat
                 # confirm_token flow shows the exact pending action.
@@ -330,6 +361,10 @@ class SpideyAgent:
                 return f'Document "{title}" delete kar doon?'
             if tool_name == "memory" and action == "delete":
                 return f'Yeh memory delete kar doon: "{str(title)[:80]}"?'
+            if tool_name == "memory" and action == "delete_all":
+                return "Meri saari memories delete kar doon? Yeh undo nahi hoga."
+            if tool_name == "attachments" and action == "delete":
+                return f'Attached file "{title}" delete kar doon?'
             if tool_name == "system":
                 if action == "run":
                     return f"Shell command chalaoon: {args.get('command', '')}"
@@ -345,6 +380,10 @@ class SpideyAgent:
             return f'Delete the document "{title}"?'
         if tool_name == "memory" and action == "delete":
             return f'Delete this memory: "{str(title)[:80]}"?'
+        if tool_name == "memory" and action == "delete_all":
+            return "Delete ALL of my memories? This can't be undone."
+        if tool_name == "attachments" and action == "delete":
+            return f'Delete the attached file "{title}"?'
         if tool_name == "system":
             # The tool's own proposal wording is mirrored here so the chat
             # confirm_token flow shows the exact pending action.
@@ -438,6 +477,207 @@ class SpideyAgent:
         except Exception:
             logger.exception("resume attachment lookup failed")
             return None
+
+    @staticmethod
+    def _get_image_attachments(conversation_id: str | None) -> list[dict]:
+        """Image attachments with stored bytes: [{filename, data_base64}].
+
+        Only rows whose bytes were actually stored (data_base64 not NULL)
+        are returned — a missing payload degrades to no image, never a
+        vision call that pretends.
+        """
+        if not conversation_id:
+            return []
+        try:
+            with get_session() as session:
+                rows = (
+                    session.execute(
+                        select(ConversationAttachment)
+                        .where(
+                            ConversationAttachment.conversation_id
+                            == conversation_id,
+                            ConversationAttachment.kind == "image",
+                            ConversationAttachment.data_base64.isnot(None),
+                        )
+                        .order_by(ConversationAttachment.created_at.desc())
+                        .limit(3)
+                    )
+                    .scalars()
+                    .all()
+                )
+                return [
+                    {"filename": r.filename, "data_base64": r.data_base64}
+                    for r in rows
+                    if r.data_base64
+                ]
+        except Exception:
+            logger.exception("image attachment lookup failed")
+            return []
+
+    async def _vision_supported(self) -> bool:
+        """Whether the ACTIVE provider can analyze images (spec 18).
+
+        Duck-typed: providers exposing an async ``vision_supported()``
+        (OllamaProvider) are asked; everything else (rule_based, test
+        doubles, openai without the hook) is honestly False. Never raises.
+        """
+        provider = self._provider()
+        check = getattr(provider, "vision_supported", None)
+        if not callable(check):
+            return False
+        try:
+            return bool(await check())
+        except Exception:
+            logger.exception("vision capability check failed")
+            return False
+
+    @staticmethod
+    def _accepts_images(fn: Callable) -> bool:
+        """Backward compat: only pass ``images=`` when the provider's
+        generate signature accepts it (mirrors _accepts_history)."""
+        try:
+            params = signature(fn).parameters
+        except (TypeError, ValueError):
+            return False
+        if "images" in params:
+            return True
+        return any(
+            p.kind == Parameter.VAR_KEYWORD for p in params.values()
+        )
+
+    async def _resolve_attachment(
+        self, conversation_id: str | None, message: str
+    ) -> dict:
+        """Resolve 'delete <filename>' / 'forget this document' to a row.
+
+        Matches by filename substring (extension-aware: 'delete notes.txt'),
+        by id prefix, or — for 'this document' phrasing with exactly one
+        attachment — the single row. Raises ToolError when ambiguous or
+        unmatched, so the agent asks instead of deleting the wrong file.
+        """
+        cid = (conversation_id or "").strip()
+        if not cid:
+            raise ToolError(
+                "I need to know which conversation's file you mean."
+            )
+        out = await self.tools["attachments"].execute(
+            action="list", conversation_id=cid
+        )
+        items = out.get("attachments", [])
+        if not items:
+            raise ToolError(
+                "There are no files attached to this conversation yet."
+            )
+        lowered = message.lower()
+        this_doc = bool(
+            re.search(
+                r"\bthis\s+(document|file|attachment)\b", lowered
+            )
+        )
+        # Explicit filename: "delete notes.txt" / "forget report.pdf".
+        # The token is the dotted filename only, not the leading verb.
+        m = re.search(r"\b([^\s]+\.\w{2,4})\b", message)
+        ref = m.group(1).strip().lower() if m else None
+        if ref:
+            for item in items:
+                if ref in str(item.get("filename", "")).lower():
+                    return item
+            for item in items:
+                if str(item.get("id", "")).startswith(ref):
+                    return item
+            raise ToolError(
+                f"I couldn't find an attached file matching {m.group(1)!r}."
+            )
+        if this_doc and len(items) == 1:
+            return items[0]
+        if len(items) == 1:
+            return items[0]
+        names = ", ".join(f"\"{i.get('filename')}\"" for i in items[:5])
+        raise ToolError(
+            f"Which file? Attached here: {names}."
+        )
+
+    @staticmethod
+    def _extract_forget(message: str) -> str:
+        """The thing to forget: 'Forget that I prefer concise answers' ->
+        'I prefer concise answers'."""
+        m = re.search(r"forget\s+(?:that\s+)?(.+)", message, re.IGNORECASE)
+        if m:
+            return m.group(1).strip().rstrip(".?!")
+        return message.strip()
+
+    @staticmethod
+    def _extract_attachment_query(message: str) -> str:
+        """The keyword for attachment search: '... where I mentioned RAG'
+        -> 'RAG'."""
+        m = re.search(
+            r"\bmentioned?\s+(.+?)[.?!]*$", message, re.IGNORECASE | re.DOTALL
+        )
+        if m and m.group(1).strip():
+            return m.group(1).strip()
+        m = re.search(
+            r"\bmentions?\s+(.+?)[.?!]*$", message, re.IGNORECASE | re.DOTALL
+        )
+        if m and m.group(1).strip():
+            return m.group(1).strip()
+        return _extract_topic(message)
+
+    @staticmethod
+    def _read_user_profile() -> dict:
+        """The stored user profile (spec 8). Real data only: missing row ->
+        {} and the agent says it doesn't know. Never raises."""
+        try:
+            with get_session() as session:
+                row = session.get(UserProfile, "local")
+                if row is None:
+                    return {}
+                return {
+                    "name": row.name,
+                    "education": row.education,
+                    "college": row.college,
+                    "projects": row.projects or [],
+                    "skills": row.skills or [],
+                    "goals": row.goals,
+                    "preferences": row.preferences or [],
+                }
+        except Exception:
+            logger.exception("user profile read failed")
+            return {}
+
+    @staticmethod
+    def _extract_preference(message: str) -> str | None:
+        """A stated preference from a 'remember ... prefer ...' message.
+
+        'Remember that I prefer concise answers' -> 'concise answers'.
+        None when the message states no preference.
+        """
+        m = re.search(r"\bprefer\s+(.+)", message, re.IGNORECASE | re.DOTALL)
+        if not m:
+            return None
+        pref = m.group(1).strip().rstrip(".?!").strip()
+        pref = re.sub(r"^that\s+", "", pref, flags=re.IGNORECASE)
+        return pref or None
+
+    @staticmethod
+    def _store_preference(pref: str) -> None:
+        """Append a user-stated preference to the profile (spec 8).
+
+        Memory must never fail the chat turn: failures are logged, not
+        raised. Duplicates are not re-added.
+        """
+        try:
+            with get_session() as session:
+                row = session.get(UserProfile, "local")
+                if row is None:
+                    row = UserProfile(user_id="local")
+                    session.add(row)
+                    session.flush()
+                prefs = list(row.preferences or [])
+                if pref not in prefs:
+                    prefs.append(pref)
+                    row.preferences = prefs
+        except Exception:
+            logger.exception("profile preference store failed")
 
     @staticmethod
     def _ensure_search_citations(
@@ -763,11 +1003,16 @@ class SpideyAgent:
         history: list[dict],
         lang: str = "en",
         intent: str = "chat_fallback",
+        images: list[str] | None = None,
     ) -> str:
         provider = self._generation_provider(intent)
         fn = provider.agenerate
         kwargs = {"context": context}
         kwargs.update(self._provider_kwargs(fn, lang, history))
+        # MEW Phase 2 — vision: image bytes (base64) only reach providers
+        # whose generate signature accepts them (OllamaProvider).
+        if images and self._accepts_images(fn):
+            kwargs["images"] = images
         try:
             return await fn(message, **kwargs)
         except ProviderError:
@@ -785,13 +1030,14 @@ class SpideyAgent:
     async def _stream_chunks(
         self, message: str, context: str, history: list[dict], lang: str,
         provider: AIProvider, intent: str = "chat_fallback",
+        images: list[str] | None = None,
     ):
         """Yield provider stream chunks, with a single-chunk fallback for
         legacy duck-typed providers that predate ``agenerate_stream``."""
         fn = getattr(provider, "agenerate_stream", None)
         if not callable(fn):
             yield await self._agenerate(
-                message, context, history, lang, intent=intent
+                message, context, history, lang, intent=intent, images=images
             )
             return
         kwargs: dict = {}
@@ -799,12 +1045,15 @@ class SpideyAgent:
             kwargs["lang"] = lang
         if self._accepts_history(fn):
             kwargs["history"] = history
+        if images and self._accepts_images(fn):
+            kwargs["images"] = images
         async for chunk in fn(message, context=context, **kwargs):
             yield chunk
 
     async def _resilient_stream_chunks(
         self, message: str, context: str, history: list[dict], lang: str,
         intent: str,
+        images: list[str] | None = None,
     ):
         """Stream from the routed provider, falling back to local rule-based
         when the configured LLM fails BEFORE the first chunk. A failure
@@ -812,7 +1061,8 @@ class SpideyAgent:
         the frontend already has partial deltas by then."""
         provider = self._generation_provider(intent)
         stream = self._stream_chunks(
-            message, context, history, lang, provider, intent=intent
+            message, context, history, lang, provider, intent=intent,
+            images=images,
         )
         try:
             first = await stream.__anext__()
@@ -824,7 +1074,8 @@ class SpideyAgent:
             )
             provider = self._local_provider
             stream = self._stream_chunks(
-                message, context, history, lang, provider, intent=intent
+                message, context, history, lang, provider, intent=intent,
+                images=images,
             )
             first = await stream.__anext__()
         except StopAsyncIteration:
@@ -888,6 +1139,7 @@ class SpideyAgent:
         emit,
         intent: str = "chat_fallback",
         leading_text: str | None = None,
+        images: list[str] | None = None,
     ) -> str:
         """Stream one generation through the routed provider, emitting
         ``voice_summary`` + ``delta`` events. Exactly one provider
@@ -899,7 +1151,7 @@ class SpideyAgent:
         voice summary, the deltas, and the returned full text alike.
         """
         chunks = self._resilient_stream_chunks(
-            message, context, history, lang, intent
+            message, context, history, lang, intent, images=images
         )
         if leading_text:
             chunks = self._prefixed_chunks(leading_text, chunks)
@@ -1016,6 +1268,28 @@ class SpideyAgent:
                 )
                 if routed is not None:
                     return self._with_degraded_notice(routed, conversation_id)
+            # MEW Phase 2 — vision gate (spec 18): an image attachment plus
+            # an image question is answered by a vision-capable model only.
+            # A text-only model gets the honest unsupported reply — the
+            # agent never pretends to see the image.
+            vision_images: list[str] | None = None
+            if _IMAGE_ASK.search(message):
+                image_attachments = self._get_image_attachments(conversation_id)
+                if image_attachments:
+                    vision_ok = await _step(
+                        "Check vision support",
+                        "understand",
+                        lambda: self._vision_supported(),
+                    )
+                    if not vision_ok:
+                        response = self._with_degraded_notice(
+                            VISION_UNSUPPORTED_REPLY, conversation_id
+                        )
+                        engine.finish_run(
+                            run.workflow_id, "completed", result=response
+                        )
+                        return response
+                    vision_images = [a["data_base64"] for a in image_attachments]
             plan = build_plan(classification)
 
             if classification.get("requires_memory"):
@@ -1035,7 +1309,10 @@ class SpideyAgent:
                     continue
                 tool_name = plan_step["tool"]
                 try:
-                    args = await self._tool_args(tool_name, intent, message)
+                    args = await self._tool_args(
+                        tool_name, intent, message,
+                        conversation_id=conversation_id,
+                    )
                 except ToolError as exc:
                     engine.finish_run(
                         run.workflow_id, "failed", result=exc.user_message
@@ -1119,6 +1396,13 @@ class SpideyAgent:
                                 "results": [],
                                 "error": exc.user_message,
                             }
+                        elif tool_name in ("memory", "attachments"):
+                            # Conversational tools speak in user-safe messages
+                            # ("I couldn't find a memory matching ..."): surfacing
+                            # them beats the generic fallback. Never a traceback.
+                            tool_results[tool_name] = {
+                                "error": exc.user_message,
+                            }
                         else:
                             raise
                 if not tool_results:
@@ -1150,7 +1434,8 @@ class SpideyAgent:
                 "Compose response",
                 "respond",
                 lambda: self._agenerate(
-                    message, facts, history, lang, intent=intent
+                    message, facts, history, lang, intent=intent,
+                    images=vision_images,
                 ),
                 input_data={"facts": facts[:500]},
             )
@@ -1357,6 +1642,40 @@ class SpideyAgent:
                     )
                     await _done_event(full)
                     return routed
+            # MEW Phase 2 — vision gate (spec 18): same semantics as run().
+            vision_images: list[str] | None = None
+            if _IMAGE_ASK.search(message):
+                image_attachments = self._get_image_attachments(conversation_id)
+                if image_attachments:
+                    await emit(
+                        "state",
+                        {
+                            "state": "thinking",
+                            "label": "Checking vision support",
+                        },
+                    )
+                    vision_ok = await _step(
+                        "Check vision support",
+                        "understand",
+                        lambda: self._vision_supported(),
+                    )
+                    if not vision_ok:
+                        response = self._with_degraded_notice(
+                            VISION_UNSUPPORTED_REPLY, conversation_id
+                        )
+                        engine.finish_run(
+                            run.workflow_id, "completed", result=response
+                        )
+                        await emit(
+                            "state",
+                            {"state": "speaking", "label": "Speaking"},
+                        )
+                        full = await self._emit_chunks(
+                            self._text_chunks(response), lang, emit
+                        )
+                        await _done_event(full)
+                        return full
+                    vision_images = [a["data_base64"] for a in image_attachments]
             plan = build_plan(classification)
 
             if classification.get("requires_memory"):
@@ -1376,7 +1695,10 @@ class SpideyAgent:
                     continue
                 tool_name = plan_step["tool"]
                 try:
-                    args = await self._tool_args(tool_name, intent, message)
+                    args = await self._tool_args(
+                        tool_name, intent, message,
+                        conversation_id=conversation_id,
+                    )
                 except ToolError as exc:
                     engine.finish_run(
                         run.workflow_id, "failed", result=exc.user_message
@@ -1471,6 +1793,12 @@ class SpideyAgent:
                                 "results": [],
                                 "error": exc.user_message,
                             }
+                        elif tool_name in ("memory", "attachments"):
+                            # Same honest-error surfacing as run(): user-safe
+                            # messages beat the generic fallback.
+                            tool_results[tool_name] = {
+                                "error": exc.user_message,
+                            }
                         else:
                             raise
                     await emit(
@@ -1517,6 +1845,7 @@ class SpideyAgent:
                     # One-time degraded notice rides the stream from the
                     # first delta (voice summary + deltas + final text).
                     leading_text=self._degraded_notice_text(conversation_id),
+                    images=vision_images,
                 ),
                 input_data={"facts": facts[:500]},
             )
@@ -1929,10 +2258,22 @@ class SpideyAgent:
 
     async def _update_memory(self, intent: str, message: str) -> dict:
         if intent == "remember":
+            # Spec 8: "Remember that I prefer concise answers" is stored as
+            # a preference — captured into the user profile alongside the
+            # normal memory save (which already ran via the memory tool).
+            pref = self._extract_preference(message)
+            if pref:
+                self._store_preference(pref)
             return {"saved": True, "reason": "already saved by memory tool"}
         return {"saved": False, "reason": "nothing salient"}
 
-    async def _tool_args(self, tool: str, intent: str, message: str) -> dict:
+    async def _tool_args(
+        self,
+        tool: str,
+        intent: str,
+        message: str,
+        conversation_id: str | None = None,
+    ) -> dict:
         if tool == "calculator":
             return {"text": message}
         if tool == "memory":
@@ -1941,7 +2282,42 @@ class SpideyAgent:
                     "action": "save",
                     "content": self._extract_remember(message),
                 }
+            if intent == "memory_forget":
+                # Single best-matching memory is deleted (low_write, auto).
+                return {
+                    "action": "forget",
+                    "query": self._extract_forget(message),
+                }
+            if intent == "memory_forget_all":
+                # Bulk wipe: confirmation-gated via action_permissions.
+                return {"action": "delete_all"}
+            if intent == "memory_list":
+                return {"action": "list"}
             return {"action": "recall", "query": message, "limit": 5}
+        if tool == "attachments":
+            # MEW Phase 2 — conversational file management (spec 2). The
+            # conversation id scopes every action to this chat's files.
+            cid = (conversation_id or "").strip()
+            if intent == "attachment_list":
+                return {"action": "list", "conversation_id": cid}
+            if intent == "attachment_search":
+                return {
+                    "action": "search",
+                    "conversation_id": cid,
+                    "query": self._extract_attachment_query(message),
+                    "limit": 10,
+                }
+            if intent == "attachment_delete":
+                # Resolved up front so the confirmation proposal names the
+                # real file; a bad ref ends the run with the tool's message.
+                item = await self._resolve_attachment(cid, message)
+                return {
+                    "action": "delete",
+                    "id": item["id"],
+                    "filename": item.get("filename", ""),
+                    "conversation_id": cid,
+                }
+            return {"action": "list", "conversation_id": cid}
         if tool == "tasks":
             if intent == "task_create":
                 return {
@@ -2249,6 +2625,111 @@ class SpideyAgent:
                 "I don't have anything stored about that yet.",
                 "Is baare mein mujhe abhi kuch yaad nahi hai.",
                 "इस बारे में मुझे अभी कुछ याद नहीं है।",
+            )
+        if intent == "who_am_i":
+            # Spec 8: answer from the stored profile; anything unknown is
+            # reported honestly, never invented.
+            profile = SpideyAgent._read_user_profile()
+            bits: list[str] = []
+            if profile.get("name"):
+                bits.append(f"your name is {profile['name']}")
+            if profile.get("college"):
+                bits.append(f"you're at {profile['college']}")
+            if profile.get("education"):
+                bits.append(f"you're studying {profile['education']}")
+            if profile.get("skills"):
+                bits.append(
+                    f"your skills include {', '.join(profile['skills'])}"
+                )
+            if profile.get("projects"):
+                bits.append(
+                    f"you've worked on {', '.join(profile['projects'])}"
+                )
+            if profile.get("goals"):
+                bits.append(f"your goals: {profile['goals']}")
+            if profile.get("preferences"):
+                bits.append(
+                    f"your preferences: {'; '.join(profile['preferences'])}"
+                )
+            if bits:
+                return "Here's what I know about you:\n- " + "\n- ".join(bits)
+            return (
+                "I don't have that information yet — I don't know anything "
+                "about you. Tell me your name and I'll remember it."
+            )
+        if intent == "memory_forget":
+            err = tool_results.get("memory", {}).get("error")
+            if err:
+                return err
+            forgot = tool_results.get("memory", {}).get("forgot", {})
+            content = forgot.get("content", "")
+            return pick(
+                f'Forgot it — removed "{content}" from memory.',
+                f'Bhool gaya — "{content}" memory se hata diya.',
+                f'भूल गया — "{content}" याददाश्त से हटा दिया।',
+            )
+        if intent == "memory_forget_all":
+            deleted = tool_results.get("memory", {}).get("deleted", 0)
+            return pick(
+                f"Done — deleted {deleted} memories. Fresh start.",
+                f"Ho gaya — {deleted} memories delete kar di. Fresh start!",
+                f"हो गया — {deleted} यादें हटा दीं। नई शुरुआत!",
+            )
+        if intent == "memory_list":
+            mems = tool_results.get("memory", {}).get("memories", [])
+            if mems:
+                lines = "\n".join(f"- {m['content']}" for m in mems)
+                return pick(
+                    f"Here's everything I remember about you:\n{lines}",
+                    f"Mujhe tumhare baare mein yeh sab yaad hai:\n{lines}",
+                    f"मुझे तुम्हारे बारे में यह सब याद है:\n{lines}",
+                )
+            return pick(
+                "I don't have anything stored in memory yet.",
+                "Meri memory mein abhi kuch stored nahi hai.",
+                "मेरी याददाश्त में अभी कुछ संग्रहीत नहीं है।",
+            )
+        if intent == "attachment_list":
+            atts = tool_results.get("attachments", {}).get("attachments", [])
+            if atts:
+                lines = "\n".join(
+                    f"- {a.get('filename')} ({a.get('kind')})"
+                    for a in atts
+                )
+                return pick(
+                    f"Files attached to this conversation:\n{lines}",
+                    f"Is conversation mein yeh files attached hain:\n{lines}",
+                    f"इस बातचीत में ये फ़ाइलें अटैच हैं:\n{lines}",
+                )
+            return pick(
+                "No files attached to this conversation yet.",
+                "Is conversation mein abhi koi file attach nahi hai.",
+                "इस बातचीत में अभी कोई फ़ाइल अटैच नहीं है।",
+            )
+        if intent == "attachment_search":
+            err = tool_results.get("attachments", {}).get("error")
+            if err:
+                return err
+            matches = tool_results.get("attachments", {}).get("matches", [])
+            query = tool_results.get("attachments", {}).get("query", "")
+            if matches:
+                lines = "\n".join(
+                    f"- {m.get('filename')}: {m.get('snippet')}"
+                    for m in matches
+                )
+                return (
+                    f"Found {query!r} in:\n{lines}"
+                )
+            return (
+                f"I didn't find {query!r} in any file attached to this "
+                "conversation."
+            )
+        if intent == "attachment_delete":
+            filename = tool_results.get("attachments", {}).get("filename", "")
+            return pick(
+                f'Deleted the attached file "{filename}".',
+                f'Attached file delete kar di: "{filename}".',
+                f'अटैच की गई फ़ाइल हटा दी: "{filename}"।',
             )
         if intent == "task_create":
             task = tool_results.get("tasks", {}).get("task", {})

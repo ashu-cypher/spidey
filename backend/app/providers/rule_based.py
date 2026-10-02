@@ -155,6 +155,56 @@ _RESUME_ANALYZE = re.compile(
     re.IGNORECASE,
 )
 
+# MEW Phase 2 — user profile ("Who am I?" answers from the stored profile;
+# unknown fields are honestly reported as unknown, never invented).
+_WHO_AM_I = re.compile(
+    r"\bwho\s+am\s+i\b"
+    r"|\bwhat('s| is)\s+my\s+name\b"
+    r"|\btell\s+me\s+about\s+myself\b",
+    re.IGNORECASE,
+)
+# MEW Phase 2 — memory forget. Bulk wipe ("forget everything") is a separate
+# confirmation-gated intent; "don't forget ..." is a reminder phrasing, not
+# a deletion, and is guarded out below.
+_MEMORY_FORGET_ALL = re.compile(
+    r"\bforget\s+(everything|all(\s+of\s+it)?)\b"
+    r"|\bdelete\s+all\s+memories\b"
+    r"|\bwipe\b.{0,20}\bmemory\b",
+    re.IGNORECASE,
+)
+_DONT_FORGET = re.compile(r"\bdon'?t\s+forget\b", re.IGNORECASE)
+_MEMORY_FORGET = re.compile(r"\bforget\s+(?:that\s+)?\S", re.IGNORECASE)
+# "What do you remember about me?" lists the whole store (not a recall
+# query — the generic phrasing would score nothing).
+_MEMORY_LIST_ALL = re.compile(
+    r"\bwhat\s+do\s+you\s+remember\s+about\s+me\b"
+    r"|\b(list|show)\b.{0,20}\bmemories\b"
+    r"|\bwhat\b.{0,15}\bmemories\b.{0,10}\b(do\s+you\s+)?have\b",
+    re.IGNORECASE,
+)
+# MEW Phase 2 — conversational file management over conversation_attachments.
+# "Forget this document" must beat the memory-forget pattern, so the delete
+# check runs before it in _classify.
+_ATTACHMENT_DELETE = re.compile(
+    r"\bforget\s+this\s+(document|file|attachment)\b"
+    r"|\bdelete\b.{0,30}\b(documents?|files?|attachments?)\b"
+    r"|\bdelete\s+(?:the\s+)?([^\s]+\.\w{2,4})\b",
+    re.IGNORECASE,
+)
+_ATTACHMENT_LIST = re.compile(
+    r"\bwhat\s+files\s+have\s+i\s+uploaded\b"
+    r"|\b(list|show)\b.{0,25}\b(uploaded|attached)\b.{0,10}\b(files?|documents?)\b"
+    r"|\bmy\s+(uploaded|attached)\s+(files?|documents?)\b"
+    r"|\bfiles\s+i('ve|\s+have)\s+attached\b",
+    re.IGNORECASE,
+)
+_ATTACHMENT_SEARCH = re.compile(
+    r"\bfind\b.{0,40}\b(papers?|documents?|files?|notes?)\b.{0,40}\bwhere\b"
+    r"|\bwhere\s+did\s+i\s+mention\b"
+    r"|\bwhich\s+(document|file)\s+mentions\b",
+    re.IGNORECASE,
+)
+
 # MEW upgrade — attachment/resume-as-context intents. "analyze this" /
 # "explain this" / "summarize this" resolve against the conversation's
 # attached files (document_qa); resume-targeted phrasing without the word
@@ -419,6 +469,66 @@ class RuleBasedProvider(AIProvider):
                 "requires_memory": False,
                 "requires_tools": True,
                 "tools": ["resume"],
+                "response_mode": "answer",
+            }
+        # MEW Phase 2 — profile, memory forget/list, conversational file
+        # management. "Forget this document" beats memory-forget (document
+        # deletion, not a memory deletion); bulk memory wipe is its own
+        # confirmation-gated intent.
+        if _ATTACHMENT_DELETE.search(text):
+            return {
+                "intent": "attachment_delete",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["attachments"],
+                "response_mode": "confirm",
+            }
+        if _WHO_AM_I.search(text):
+            return {
+                "intent": "who_am_i",
+                "requires_memory": False,
+                "requires_tools": False,
+                "tools": [],
+                "response_mode": "answer",
+            }
+        if _MEMORY_FORGET_ALL.search(text):
+            return {
+                "intent": "memory_forget_all",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["memory"],
+                "response_mode": "confirm",
+            }
+        if _MEMORY_FORGET.search(text) and not _DONT_FORGET.search(text):
+            return {
+                "intent": "memory_forget",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["memory"],
+                "response_mode": "confirm",
+            }
+        if _MEMORY_LIST_ALL.search(text):
+            return {
+                "intent": "memory_list",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["memory"],
+                "response_mode": "list",
+            }
+        if _ATTACHMENT_LIST.search(text):
+            return {
+                "intent": "attachment_list",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["attachments"],
+                "response_mode": "list",
+            }
+        if _ATTACHMENT_SEARCH.search(text):
+            return {
+                "intent": "attachment_search",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["attachments"],
                 "response_mode": "answer",
             }
         if _GENERATE_PROMPT.search(text):

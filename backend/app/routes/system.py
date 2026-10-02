@@ -29,6 +29,7 @@ from app.providers.manager import (
     probe_provider,
     set_selection,
 )
+from app.providers.ollama import ollama_vision_supported
 from app.tools.system_controller import SystemControllerTool
 
 router = APIRouter()
@@ -78,6 +79,35 @@ def _model_display(provider: str, model: str | None, degraded: bool) -> str:
     return "FALLBACK (RULE-BASED)"
 
 
+# OpenAI model families with real vision support (name heuristic — the
+# server never claims vision for a model family it doesn't recognize).
+_OPENAI_VISION_FAMILIES = ("gpt-4o", "gpt-4.1", "o1")
+
+
+async def _vision_state(provider: str, model: str | None) -> bool:
+    """Whether the configured provider can analyze images (spec 18).
+
+    * ollama -> /api/show ``capabilities`` or the VISION_MODELS name
+      heuristic (cached per provider instance here — a fresh check per
+      status call keeps it honest if the model was pulled meanwhile).
+    * openai -> name heuristic over known vision families.
+    * rule_based (or anything else) -> False: no vision.
+    A degraded/unreachable model is honestly False. Never raises.
+    """
+    try:
+        if is_model_degraded():
+            return False
+        if provider == "ollama" and model:
+            base = settings.ollama_base_url.rstrip("/")
+            return await ollama_vision_supported(base, model)
+        if provider == "openai" and model:
+            lowered = model.lower()
+            return any(tag in lowered for tag in _OPENAI_VISION_FAMILIES)
+    except Exception:
+        return False
+    return False
+
+
 @router.get("/api/system/status")
 async def system_status():
     """Real service state. Every value is measured, not hardcoded:
@@ -88,6 +118,10 @@ async def system_status():
     * ``model_degraded`` — True when the startup probe found the configured
       Ollama model unavailable (the agent keeps working on rule_based; the
       first chat message in that state carries a one-time notice).
+    * ``vision_supported`` — True when the configured provider's model can
+      analyze attached images (Ollama /api/show capabilities or the
+      VISION_MODELS name heuristic; OpenAI via known vision families).
+      Honestly False when the model is degraded or unreachable.
     * ``online`` — true (the endpoint answered).
     * ``memory`` — "ready" iff a DB query succeeded.
     * ``voice`` — this backend has no server-side speech models; STT/TTS run
@@ -104,6 +138,7 @@ async def system_status():
         "model": model,
         "model_display": _model_display(provider, model, degraded),
         "model_degraded": degraded,
+        "vision_supported": await _vision_state(provider, model),
         "online": True,
         "memory": _memory_state(),
         "voice": {"stt": "browser", "tts": "browser"},

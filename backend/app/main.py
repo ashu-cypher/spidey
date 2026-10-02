@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import init_db
-from app.routes import chat, events, health, knowledge, protocols, resume, system
+from app.routes import chat, events, health, knowledge, profile, protocols, resume, system
 
 logger = logging.getLogger("spidey")
 
@@ -81,6 +81,7 @@ def create_app():
     app.include_router(chat.router)
     app.include_router(health.router)
     app.include_router(knowledge.router)
+    app.include_router(profile.router)
     app.include_router(resume.router)
     app.include_router(events.router)
     app.include_router(protocols.router)

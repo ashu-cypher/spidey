@@ -60,7 +60,14 @@ class MemoryTool(BaseTool):
     }
     output_schema = {"action": "str"}
     # save is a low-risk write (auto); delete needs confirmation (spec 21).
-    action_permissions = {"save": "low_write", "delete": "confirm"}
+    # forget deletes ONE best-matching memory (auto); delete_all wipes the
+    # whole store and is confirmation-gated like delete.
+    action_permissions = {
+        "save": "low_write",
+        "delete": "confirm",
+        "forget": "low_write",
+        "delete_all": "confirm",
+    }
 
     @staticmethod
     def _categorize(content: str) -> tuple[str, float]:
@@ -85,6 +92,10 @@ class MemoryTool(BaseTool):
             return self._list(kwargs)
         if action == "delete":
             return self._delete(kwargs)
+        if action == "forget":
+            return self._forget(kwargs)
+        if action == "delete_all":
+            return self._delete_all(kwargs)
         raise ToolError(f"Unknown memory action: {action!r}.")
 
     def _save(self, kwargs: dict) -> dict:
@@ -155,3 +166,79 @@ class MemoryTool(BaseTool):
                 raise ToolError("Memory not found.")
             session.delete(row)
             return {"deleted": memory_id}
+
+    def _best_match(self, query: str) -> Memory | None:
+        """The single best-matching non-expired memory for ``query``.
+
+        Reuses the same token-overlap scoring as ``_recall`` so 'forget'
+        and 'recall' agree on what matches; the highest (overlap,
+        importance) row wins. Returns None when nothing overlaps.
+        """
+        q_tokens = self._tokens(query)
+        if not q_tokens:
+            return None
+        now = _utcnow()
+        with get_session() as session:
+            rows = (
+                session.execute(
+                    select(Memory).where(
+                        or_(Memory.expires_at.is_(None), Memory.expires_at > now)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            scored: list[tuple[float, float, Memory]] = []
+            for row in rows:
+                m_tokens = self._tokens(row.content)
+                overlap = len(q_tokens & m_tokens) / max(1, len(q_tokens))
+                if overlap > 0:
+                    scored.append((overlap, row.importance or 0.0, row))
+            if not scored:
+                return None
+            scored.sort(key=lambda pair: (pair[0], pair[1]), reverse=True)
+            best = scored[0][2]
+            session.expunge(best)
+            return best
+
+    def _forget(self, kwargs: dict) -> dict:
+        """Delete the single best-matching memory for ``query``.
+
+        Honest when nothing matches: raises a user-safe ToolError instead
+        of deleting something unrelated. Bulk deletion is NOT this action —
+        use delete_all (confirmation-gated).
+        """
+        query = (kwargs.get("query") or "").strip()
+        if not query:
+            raise ToolError("Forget needs something to forget — say what.")
+        best = self._best_match(query)
+        if best is None:
+            raise ToolError(
+                f"I couldn't find a memory matching {query!r} to forget."
+            )
+        with get_session() as session:
+            row = session.get(Memory, best.id)
+            if row is None:
+                raise ToolError("That memory is already gone.")
+            session.delete(row)
+        return {"forgot": _to_dict(best)}
+
+    def _delete_all(self, kwargs: dict) -> dict:
+        """Wipe every memory for the user. Confirmation-gated (spec 21):
+        the agent only reaches this after the user approved the proposal,
+        and the tool honours the ``_confirmed`` marker implicitly through
+        that gate (the marker kwarg is accepted and ignored)."""
+        with get_session() as session:
+            rows = (
+                session.execute(
+                    select(Memory).where(
+                        Memory.user_id == (kwargs.get("user_id") or "local")
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            count = len(rows)
+            for row in rows:
+                session.delete(row)
+            return {"deleted": count}

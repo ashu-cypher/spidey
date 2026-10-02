@@ -42,6 +42,7 @@ __all__ = [
     "ResumeVersion",
     "ConversationAttachment",
     "Setting",
+    "UserProfile",
 ]
 
 
@@ -282,6 +283,10 @@ class ConversationAttachment(Base):
     # 'document' | 'resume' | 'image'
     kind: Mapped[str] = mapped_column(String(16), default="document")
     extracted_text: Mapped[str] = mapped_column(Text, default="")
+    # MEW Phase 2 — base64-encoded bytes for kind='image' attachments
+    # (bounded at write time), so a vision-capable provider can actually see
+    # the image. NULL for document/resume attachments.
+    data_base64: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 
@@ -291,3 +296,31 @@ class Setting(Base):
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     value: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
+class UserProfile(Base):
+    """MEW Phase 2 — user-supplied profile (spec section 8).
+
+    One row per user (user_id is the primary key). EVERY field is set ONLY
+    from explicit user input — PUT /api/profile or a "remember ..." capture
+    of a stated preference. Unknown fields stay NULL/empty and the agent
+    reports them honestly as unknown; nothing is ever invented.
+    """
+
+    __tablename__ = "user_profile"
+
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id"), primary_key=True, default="local"
+    )
+    name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    education: Mapped[str | None] = mapped_column(Text, nullable=True)
+    college: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # JSON lists, user-supplied only.
+    projects: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    skills: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    goals: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # JSON list of stated preferences ("concise answers", ...).
+    preferences: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow, onupdate=_utcnow
+    )

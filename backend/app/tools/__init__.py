@@ -1,4 +1,5 @@
 from app.tools.base import BaseTool, ToolError
+from app.tools.attachments import AttachmentTool
 from app.tools.calculator import CalculatorTool
 from app.tools.code import CodeTool
 from app.tools.documents import DocumentTool
@@ -12,6 +13,7 @@ from app.tools.system_controller import SystemControllerTool
 from app.tools.tasks import TaskTool
 
 __all__ = [
+    "AttachmentTool",
     "BaseTool",
     "CalculatorTool",
     "CodeTool",
@@ -31,6 +33,7 @@ __all__ = [
 TOOL_REGISTRY: dict[str, BaseTool] = {
     "calculator": CalculatorTool(),
     "memory": MemoryTool(),
+    "attachments": AttachmentTool(),
     "tasks": TaskTool(),
     "reminders": ReminderTool(),
     "rag": RAGTool(),

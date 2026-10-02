@@ -94,7 +94,13 @@ def test_attach_classifies_resume_by_content_not_just_name():
     assert resp.json()["kind"] == "resume"
 
 
-def test_attach_image_stores_filename_only():
+def test_attach_image_stores_bytes_for_vision():
+    # MEW Phase 2 (spec 18): image bytes are stored (base64) so a
+    # vision-capable model can receive them via the /api/generate `images`
+    # array. The stored note stays neutral — capability is decided per
+    # model by the vision gate, not at upload time.
+    import base64
+
     resp = client.post(
         "/api/chat/attach",
         files={"file": ("photo.png", io.BytesIO(b"\x89PNG fake"), "image/png")},
@@ -104,9 +110,10 @@ def test_attach_image_stores_filename_only():
     body = resp.json()
     assert body["kind"] == "image"
     row = _stored(body["id"])
-    # Honest: no vision model — only the filename is meaningfully stored.
-    assert "no vision model" in row.extracted_text
     assert "photo.png" in row.filename
+    assert "photo.png" in row.extracted_text
+    assert row.data_base64 is not None
+    assert base64.b64decode(row.data_base64) == b"\x89PNG fake"
 
 
 def test_attach_rejects_unsupported_type():
@@ -288,7 +295,9 @@ def test_alembic_upgrade_and_downgrade_cleanly(tmp_path, monkeypatch):
     cfg.set_main_option("script_location", str(backend_dir / "alembic"))
 
     command.stamp(cfg, "e8f1a2b3c4d5")  # previous head; new revision is next
-    command.upgrade(cfg, "head")
+    # Target the conversation_attachments revision explicitly: later heads
+    # (Phase 2 user_profile / image-data revisions) build on it.
+    command.upgrade(cfg, "f3a8c7d2e1b4")
     eng = create_engine(f"sqlite:///{db_path}")
     try:
         assert "conversation_attachments" in inspect(eng).get_table_names()
@@ -313,7 +322,7 @@ def test_alembic_upgrade_and_downgrade_cleanly(tmp_path, monkeypatch):
         command.downgrade(cfg, "-1")
         assert "conversation_attachments" not in inspect(eng).get_table_names()
 
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, "f3a8c7d2e1b4")
         assert "conversation_attachments" in inspect(eng).get_table_names()
     finally:
         eng.dispose()
