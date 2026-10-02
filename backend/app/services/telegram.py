@@ -81,6 +81,29 @@ def is_configured() -> bool:
     return bool(_get_token()) and bool(_get_chat_id())
 
 
+async def validate_token(bot_token: str) -> tuple[bool, str]:
+    """Check a bot token via getMe WITHOUT requiring a chat ID.
+
+    Used by the config endpoint: the user is submitting both token and
+    chat ID together, so we must not fail on the not-yet-saved chat ID.
+    """
+    token = (bot_token or "").strip()
+    if not token:
+        return False, "Telegram bot token isn't configured yet."
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{_TELEGRAM_API}/bot{token}/getMe")
+            data = resp.json()
+    except Exception as e:
+        logger.warning("telegram getMe failed: %s", e)
+        return False, "Couldn't reach Telegram — check your network."
+    if data.get("ok"):
+        name = (data.get("result") or {}).get("username", "bot")
+        return True, f"Bot @{name} verified."
+    desc = (data.get("description") or "unknown error").strip()
+    return False, f"Telegram rejected the token: {desc}"
+
+
 async def test_connection(bot_token: str | None = None) -> tuple[bool, str]:
     """Verify the bot token works via getMe. Returns (ok, message)."""
     token = (bot_token or "").strip() or _get_token()

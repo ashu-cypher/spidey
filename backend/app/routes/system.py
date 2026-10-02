@@ -239,7 +239,7 @@ async def config_telegram(body: dict):
     config file (~/.mew_telegram.json), never exposed to the frontend,
     never committed to git. Validates via getMe before saving.
     """
-    from app.services.telegram import save_config, test_connection
+    from app.services.telegram import save_config, validate_token
 
     bot_token = (body.get("bot_token") or "").strip()
     chat_id = (body.get("chat_id") or "").strip()
@@ -247,9 +247,11 @@ async def config_telegram(body: dict):
         return {"ok": False, "message": "Bot token is required."}
     if not chat_id:
         return {"ok": False, "message": "Chat ID is required."}
-    # Validate the token works before saving.
-    ok, message = await test_connection(bot_token)
+    # Validate the token works before saving. validate_token (not
+    # test_connection): the chat ID isn't saved yet, so the full
+    # connection check would wrongly fail here.
+    ok, message = await validate_token(bot_token)
     if not ok:
-        return {"ok": False, "message": f"Token invalid: {message}"}
+        return {"ok": False, "message": message}
     save_config(bot_token, chat_id)
     return {"ok": True, "message": "Telegram configured. Send a test reminder to verify delivery."}
