@@ -87,6 +87,10 @@ export interface JarvisVoiceCallbacks {
   onVoiceStateChange?: (state: VoiceState) => void;
   onError?: (message: string) => void;
   onUnsupported?: () => void;
+  /** User speech detected while J.A.R.V.I.S. was speaking (barge-in). */
+  onBargeIn?: () => void;
+  /** The TTS phrase queue drained completely (natural end, not cancel). */
+  onTtsQueueDrained?: () => void;
 }
 
 const AWAKE_WINDOW_MS = 60_000;
@@ -94,6 +98,42 @@ const WAKE_KEY = 'jarvis.wakeSensitivity';
 const PITCH_KEY = 'jarvis.pitch';
 const RATE_KEY = 'jarvis.rate';
 const VOICE_URI_KEY = 'jarvis.voiceURI';
+export const VOICE_LANG_KEY = 'jarvis.voiceLang';
+const VOLUME_KEY = 'jarvis.volume';
+export const VOLUME_STORAGE_KEY = VOLUME_KEY;
+
+/** Voice language setting: recognition locale + TTS voice preference. */
+export type VoiceLangSetting = 'auto' | 'en' | 'hi' | 'hinglish';
+
+/**
+ * Browsers cannot do true dual-language recognition, so Hinglish and Auto
+ * both use en-IN; Auto additionally follows the last detected language for
+ * the TTS voice choice (see the Voice tab note).
+ */
+function recognitionLocale(lang: VoiceLangSetting): string {
+  switch (lang) {
+    case 'en':
+      return 'en-IN';
+    case 'hi':
+      return 'hi-IN';
+    case 'hinglish':
+    case 'auto':
+    default:
+      return 'en-IN';
+  }
+}
+
+function readVoiceLangSetting(): VoiceLangSetting {
+  try {
+    const raw = localStorage.getItem(VOICE_LANG_KEY);
+    if (raw === 'en' || raw === 'hi' || raw === 'hinglish' || raw === 'auto') {
+      return raw;
+    }
+  } catch {
+    /* ignore */
+  }
+  return 'auto';
+}
 
 function clamp(n: number, lo: number, hi: number): number {
   if (Number.isNaN(n)) return 1;
@@ -107,6 +147,18 @@ function readNumber(key: string, fallback: number): number {
     return clamp(parseFloat(raw), 0.5, 2);
   } catch {
     return fallback;
+  }
+}
+
+function readVolume(): number {
+  try {
+    const raw = localStorage.getItem(VOLUME_KEY);
+    if (raw === null) return 1;
+    const n = parseFloat(raw);
+    if (Number.isNaN(n)) return 1;
+    return Math.min(1, Math.max(0, n));
+  } catch {
+    return 1;
   }
 }
 
@@ -137,6 +189,30 @@ export function listVoices(): SpeechSynthesisVoice[] {
   return window.speechSynthesis.getVoices();
 }
 
+/**
+ * Pick a TTS voice for a response language. Hindi/Hinglish responses prefer
+ * a voice whose lang starts with 'hi'; everything else keeps the British
+ * preference. Never throws; returns null when no voice matches, in which
+ * case the utterance falls back to the browser default.
+ */
+export function pickVoiceForLang(
+  lang: string | null,
+  voices: SpeechSynthesisVoice[],
+): SpeechSynthesisVoice | null {
+  if (lang === 'hi' || lang === 'hinglish') {
+    const hindi = voices.find((v) => v.lang.toLowerCase().startsWith('hi'));
+    if (hindi) return hindi;
+  }
+  return pickBritishVoice(voices);
+}
+
+interface QueuedSpeech {
+  text: string;
+  /** Response language hint ('hi'/'hinglish' prefer a Hindi voice). */
+  lang: string | null;
+  onDone?: () => void;
+}
+
 export class JarvisVoice {
   readonly supported: boolean;
   readonly ttsSupported: boolean;
@@ -150,11 +226,16 @@ export class JarvisVoice {
   private restartTimer: number | null = null;
   private restartStamps: number[] = [];
   private sensitivity: WakeSensitivity;
+  private recognitionLang: VoiceLangSetting;
+  /** Conversation mode: the awake window never expires on its own. */
+  private stayAwake = false;
   private speaking = false;
   private lastSpoken = '';
   private voiceState: VoiceState = 'idle';
   private voiceError: string | null = null;
   private recognizeTimer: number | null = null;
+  private ttsQueue: QueuedSpeech[] = [];
+  private ttsActive = false;
 
   constructor() {
     this.supported = recognitionCtor() !== null;
@@ -168,6 +249,7 @@ export class JarvisVoice {
       /* ignore */
     }
     this.sensitivity = s;
+    this.recognitionLang = readVoiceLangSetting();
   }
 
   // -- configuration -------------------------------------------------------
@@ -191,6 +273,36 @@ export class JarvisVoice {
     } catch {
       /* ignore */
     }
+  }
+
+  getRecognitionLang(): VoiceLangSetting {
+    return this.recognitionLang;
+  }
+
+  /**
+   * Set the speech-recognition language (en→en-IN, hi→hi-IN,
+   * hinglish/auto→en-IN). Applies to the live recognizer when possible and
+   * to every recognizer spawned afterwards.
+   */
+  setRecognitionLang(lang: VoiceLangSetting): void {
+    this.recognitionLang = lang;
+    try {
+      localStorage.setItem(VOICE_LANG_KEY, lang);
+    } catch {
+      /* ignore */
+    }
+    if (this.rec) {
+      try {
+        this.rec.lang = recognitionLocale(lang);
+      } catch {
+        /* changing lang mid-recognition may throw; next spawn applies it */
+      }
+    }
+  }
+
+  /** Conversation mode keeps the awake window from expiring on silence. */
+  setStayAwake(v: boolean): void {
+    this.stayAwake = v;
   }
 
   isSpeaking(): boolean {
@@ -285,6 +397,30 @@ export class JarvisVoice {
     this.rec = null;
   }
 
+  /** Fully release the mic: no restart, drop the recognizer instance. */
+  releaseMicrophone(): void {
+    this.wantListening = false;
+    this.clearRecognizeCooldown();
+    if (this.restartTimer !== null) {
+      window.clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
+    const rec = this.rec;
+    this.rec = null;
+    try {
+      rec?.abort();
+    } catch {
+      /* ignore */
+    }
+    this.setListening(false);
+  }
+
+  /** Restart recognition if it silently died while the mic is still wanted. */
+  ensureListening(): void {
+    if (!this.supported || !this.wantListening || this.rec) return;
+    this.spawnRecognition();
+  }
+
   private spawnRecognition(): void {
     const Ctor = recognitionCtor();
     if (!Ctor) {
@@ -294,7 +430,7 @@ export class JarvisVoice {
     const rec: JarvisRecognition = new Ctor();
     rec.continuous = true;
     rec.interimResults = true;
-    rec.lang = 'en-US';
+    rec.lang = recognitionLocale(this.recognitionLang);
 
     rec.onresult = (event) => this.handleResult(event);
     rec.onerror = (event) => this.handleError(event);
@@ -341,9 +477,11 @@ export class JarvisVoice {
     if (!heard) return;
 
     // Barge-in: user talking while J.A.R.V.I.S. speaks cancels speech,
-    // recognition keeps running.
+    // recognition keeps running. The UI layer also aborts the in-flight
+    // chat stream via onBargeIn so the new utterance is processed fresh.
     if (this.speaking) {
       this.stopSpeaking();
+      this.cb.onBargeIn?.();
     }
 
     // Speech detected — mark 'recognizing'; a cooldown drops back to
@@ -447,35 +585,108 @@ export class JarvisVoice {
     if (this.awakeTimer !== null) window.clearTimeout(this.awakeTimer);
     this.awakeTimer = window.setTimeout(() => {
       this.awakeTimer = null;
+      if (this.stayAwake) {
+        // Conversation mode: re-arm instead of falling asleep on silence.
+        this.refreshAwakeWindow();
+        return;
+      }
       this.setMode('sleeping');
     }, AWAKE_WINDOW_MS);
   }
 
   // -- speech --------------------------------------------------------------
 
-  /** Speak text aloud with the British voice + stored pitch/rate. */
-  speak(raw: string): void {
-    if (!this.ttsSupported) return;
+  /**
+   * Queue a phrase to be spoken after already-queued phrases (phrase-wise
+   * TTS). `lang` picks the voice: 'hi'/'hinglish' prefer a Hindi voice.
+   * Never throws; silently drops the phrase when TTS is unsupported.
+   */
+  enqueueSpeech(
+    raw: string,
+    opts?: { lang?: string | null; onDone?: () => void },
+  ): void {
+    if (!this.ttsSupported) {
+      try {
+        opts?.onDone?.();
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
     const text = stripForSpeech(raw);
-    if (!text) return;
-    this.lastSpoken = text;
-    const synth = window.speechSynthesis;
-    synth.cancel();
-    const utter = new SpeechSynthesisUtterance(text);
-    const voice = pickBritishVoice(synth.getVoices());
-    if (voice) utter.voice = voice;
-    utter.lang = voice?.lang ?? 'en-GB';
-    utter.pitch = readNumber(PITCH_KEY, 1);
-    utter.rate = readNumber(RATE_KEY, 1);
-    utter.onstart = () => this.setSpeaking(true);
-    utter.onend = () => this.setSpeaking(false);
-    utter.onerror = () => this.setSpeaking(false);
-    synth.speak(utter);
+    if (!text) {
+      try {
+        opts?.onDone?.();
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    this.ttsQueue.push({ text, lang: opts?.lang ?? null, onDone: opts?.onDone });
+    this.pumpTtsQueue();
   }
 
+  private pumpTtsQueue(): void {
+    if (this.ttsActive || !this.ttsSupported) return;
+    const item = this.ttsQueue.shift();
+    if (!item) {
+      this.cb.onTtsQueueDrained?.();
+      return;
+    }
+    this.ttsActive = true;
+    const synth = window.speechSynthesis;
+    try {
+      synth.cancel();
+    } catch {
+      /* ignore */
+    }
+    const utter = new SpeechSynthesisUtterance(item.text);
+    const voice = pickVoiceForLang(item.lang, synth.getVoices());
+    if (voice) utter.voice = voice;
+    utter.lang =
+      voice?.lang ?? (item.lang === 'hi' || item.lang === 'hinglish' ? 'hi-IN' : 'en-GB');
+    utter.pitch = readNumber(PITCH_KEY, 1);
+    utter.rate = readNumber(RATE_KEY, 1);
+    utter.volume = readVolume();
+    this.lastSpoken = item.text;
+    utter.onstart = () => this.setSpeaking(true);
+    const finish = () => {
+      this.ttsActive = false;
+      try {
+        item.onDone?.();
+      } catch {
+        /* a callback must never break the queue */
+      }
+      // Keep the 'speaking' state across phrases; drop it only when the
+      // queue is truly empty so the reactor doesn't flicker.
+      if (this.ttsQueue.length === 0) this.setSpeaking(false);
+      this.pumpTtsQueue();
+    };
+    utter.onend = finish;
+    utter.onerror = finish;
+    try {
+      synth.speak(utter);
+    } catch {
+      finish();
+    }
+  }
+
+  /** Speak text aloud, cancelling anything already queued or speaking. */
+  speak(raw: string): void {
+    this.stopSpeaking();
+    this.enqueueSpeech(raw);
+  }
+
+  /** Cancel queued and in-flight speech immediately. */
   stopSpeaking(): void {
+    this.ttsQueue = [];
+    this.ttsActive = false;
     if (!this.ttsSupported) return;
-    window.speechSynthesis.cancel();
+    try {
+      window.speechSynthesis.cancel();
+    } catch {
+      /* ignore */
+    }
     this.setSpeaking(false);
   }
 
@@ -515,6 +726,8 @@ export function useJarvisVoice(
       onVoiceStateChange: (s) => cbRef.current?.onVoiceStateChange?.(s),
       onError: (e) => cbRef.current?.onError?.(e),
       onUnsupported: () => cbRef.current?.onUnsupported?.(),
+      onBargeIn: () => cbRef.current?.onBargeIn?.(),
+      onTtsQueueDrained: () => cbRef.current?.onTtsQueueDrained?.(),
     });
     return () => {
       voice.destroy();

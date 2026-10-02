@@ -7,7 +7,6 @@ import { useJarvis } from '../jarvis/context';
 import type { VoiceState } from '../voice/jarvisVoice';
 import { getHealth, getSystemMetrics } from '../api';
 import type { SystemMetrics } from '../api';
-import { friendlyStepLabel } from '../jarvis/steps';
 
 function formatUptime(totalSeconds: number): string {
   const s = Math.max(0, Math.floor(totalSeconds));
@@ -160,12 +159,14 @@ function WakePill() {
   return <span className="hud-pill hud-pill-off">Standby — say “Jarvis”</span>;
 }
 
-/** Real thinking state: the RUNNING step's friendly label, or "Waking up…". */
+/** Real thinking state: the latest running stream-activity label. */
 function ThinkingLine() {
-  const { chatBusy, activeSteps } = useJarvis();
+  const { chatBusy, streamActivity } = useJarvis();
   if (!chatBusy) return null;
-  const running = activeSteps.find((s) => s.status === 'RUNNING');
-  const label = running ? friendlyStepLabel(running) : 'Waking up…';
+  const current = [...streamActivity]
+    .reverse()
+    .find((i) => !i.done && !i.failed);
+  const label = current ? current.label : 'Waking up…';
   return (
     <p
       className="mt-2 font-mono text-[11px] uppercase tracking-[0.25em] text-gold hud-blink"
@@ -173,6 +174,104 @@ function ThinkingLine() {
     >
       {label}
     </p>
+  );
+}
+
+/** "Talk to Spidey" continuous conversation mode toggle. */
+function ConversationToggle() {
+  const {
+    conversationMode,
+    startConversation,
+    endConversation,
+    voiceSupported,
+    chatBusy,
+  } = useJarvis();
+
+  if (!voiceSupported) return null;
+
+  if (conversationMode) {
+    return (
+      <button
+        type="button"
+        onClick={endConversation}
+        className="mt-3 rounded-lg border border-crimson/70 bg-crimson/15 px-5 py-2 font-mono text-xs uppercase tracking-[0.25em] text-red-300 shadow-[0_0_24px_rgba(239,68,68,0.35)] hover:bg-crimson/25"
+        title="Stop recognition, cancel speech, release the mic"
+      >
+        ⏹ End conversation
+      </button>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={startConversation}
+      disabled={chatBusy}
+      className="mt-3 rounded-lg border border-accent/70 bg-accent/10 px-5 py-2 font-mono text-xs uppercase tracking-[0.25em] text-accent shadow-[0_0_24px_rgba(0,240,255,0.3)] hover:bg-accent/20 disabled:opacity-40"
+      title="Keep the mic open: talk, Spidey answers aloud, repeat"
+    >
+      🗣 Talk to Spidey
+    </button>
+  );
+}
+
+/**
+ * Expandable feed of REAL stream events for the current request
+ * (cleared on each new send). ✓ when the next state arrives or the stream
+ * completes; ✗ on failure. Nothing is invented or timed.
+ */
+function ActivityFeed() {
+  const { streamActivity } = useJarvis();
+  const [open, setOpen] = useState(false);
+  if (streamActivity.length === 0) return null;
+  const running = streamActivity.filter((i) => !i.done && !i.failed).length;
+  const failed = streamActivity.some((i) => i.failed);
+  return (
+    <div className="mt-3 w-full rounded-lg border border-accent/15 bg-carbon/40">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between px-3 py-2 font-mono text-[10px] uppercase tracking-[0.25em] text-cyan-200/70 hover:text-cyan-200"
+      >
+        <span>
+          {open ? '▾' : '▸'} Activity ·{' '}
+          {failed ? (
+            <span className="text-red-300">failed</span>
+          ) : running > 0 ? (
+            <span className="text-gold hud-blink">{running} running</span>
+          ) : (
+            <span className="text-emerald-400">done</span>
+          )}
+        </span>
+        <span className="text-cyan-200/40">{streamActivity.length}</span>
+      </button>
+      {open && (
+        <ul className="space-y-1 border-t border-accent/10 px-3 py-2">
+          {streamActivity.map((item) => (
+            <li
+              key={item.id}
+              className="flex items-start gap-2 text-xs text-cyan-100/80"
+            >
+              <span aria-hidden="true" className="shrink-0">
+                {item.failed ? '✗' : item.done ? '✓' : '⏳'}
+              </span>
+              <span
+                className={
+                  item.failed
+                    ? 'text-red-300'
+                    : item.done
+                      ? 'text-cyan-100/60'
+                      : 'text-gold'
+                }
+              >
+                {item.label}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -205,6 +304,7 @@ export function CommandCenter() {
     transcript,
     clearTranscript,
     voiceSupported,
+    conversationMode,
   } = useJarvis();
 
   const [metrics, setMetrics] = useState<SystemMetrics | null>(null);
@@ -249,17 +349,27 @@ export function CommandCenter() {
           <div className="hud-flicker">
             <ArcReactor mode={reactorMode} spectrum={spectrumRef} size={280} />
           </div>
-          <div className="mt-2">
-            <MicButton />
-          </div>
+          {!conversationMode && (
+            <div className="mt-2">
+              <MicButton />
+            </div>
+          )}
+          <ConversationToggle />
           <p className="mt-3 font-mono text-[11px] uppercase tracking-[0.25em] text-cyan-200/50">
             Voice interface
           </p>
           <div className="mt-2">
             <WakePill />
           </div>
+          {conversationMode && (
+            <span className="hud-pill hud-pill-on mt-2">
+              <span className="inline-block h-2 w-2 rounded-full bg-emerald-400 hud-blink" />
+              Conversation live
+            </span>
+          )}
           <ThinkingLine />
           <VoiceErrorCard />
+          <ActivityFeed />
           {!voiceSupported && (
             <p className="mt-3 max-w-[260px] text-center text-xs text-cyan-200/40">
               Voice isn&apos;t available in this browser — everything works by

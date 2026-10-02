@@ -83,6 +83,137 @@ export async function postChat(
   return json(res);
 }
 
+// --- Streaming chat (J.A.R.V.I.S. voice-first pass) --------------------------
+
+export type VoiceLangSetting = 'auto' | 'en' | 'hi' | 'hinglish';
+
+export type StreamEventType =
+  | 'state'
+  | 'voice_summary'
+  | 'delta'
+  | 'done'
+  | 'error';
+
+export interface StreamChatOptions {
+  signal?: AbortSignal;
+  confirmToken?: string;
+  onEvent?: (type: StreamEventType, data: Record<string, unknown>) => void;
+}
+
+/**
+ * Thrown when the backend delivered an `error` event. The user-safe message
+ * was already handed to onEvent, so callers should NOT show another card.
+ */
+export class StreamEventError extends Error {}
+
+/** Thrown when the HTTP stream ends without a terminal `done` event. */
+export class StreamInterruptedError extends Error {}
+
+const KNOWN_EVENTS: ReadonlySet<string> = new Set([
+  'state',
+  'voice_summary',
+  'delta',
+  'done',
+  'error',
+]);
+
+/**
+ * POST /api/chat/stream and parse the SSE event stream with fetch +
+ * ReadableStream. Resolves once the `done` event arrives; rejects on an
+ * `error` event (after onEvent), on transport failure, or when the stream
+ * ends without `done`. `: ping` keep-alives are ignored.
+ */
+export async function streamChat(
+  message: string,
+  history: ChatHistoryTurn[],
+  lang: VoiceLangSetting,
+  options: StreamChatOptions = {},
+): Promise<void> {
+  const res = await fetch('/api/chat/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      message,
+      history,
+      lang,
+      confirm_token: options.confirmToken ?? null,
+    }),
+    signal: options.signal,
+  });
+  if (!res.ok || !res.body) {
+    throw new Error(`API error ${res.status}: ${res.statusText}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  let eventType = '';
+  let sawDone = false;
+  let streamError: string | null = null;
+
+  const dispatch = (raw: string) => {
+    const type = eventType;
+    eventType = '';
+    if (!KNOWN_EVENTS.has(type)) return;
+    let data: Record<string, unknown>;
+    try {
+      data = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      data = { text: raw };
+    }
+    if (type === 'done') sawDone = true;
+    if (type === 'error') {
+      streamError =
+        typeof data.message === 'string' && data.message
+          ? data.message
+          : 'Something went wrong.';
+    }
+    options.onEvent?.(type as StreamEventType, data);
+  };
+
+  // `done` and `error` are terminal per the contract: stop reading once one
+  // arrives so a backend that leaves the stream open can't hang the UI.
+  const terminal = () => sawDone || streamError !== null;
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx: number;
+      while ((idx = buf.indexOf('\n')) !== -1) {
+        const line = buf.slice(0, idx).replace(/\r$/, '');
+        buf = buf.slice(idx + 1);
+        if (line === '') {
+          eventType = '';
+          continue;
+        }
+        if (line.startsWith(':')) continue; // ping keep-alive / comment
+        if (line.startsWith('event:')) {
+          eventType = line.slice(6).trim();
+          continue;
+        }
+        if (line.startsWith('data:')) {
+          dispatch(line.slice(5).trim());
+          if (terminal()) break;
+        }
+      }
+      if (terminal()) break;
+    }
+    const tail = buf.replace(/\r$/, '');
+    if (tail.startsWith('data:')) dispatch(tail.slice(5).trim());
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if (streamError !== null) throw new StreamEventError(streamError);
+  if (!sawDone) throw new StreamInterruptedError('Stream ended without done.');
+}
+
 // --- Proactive briefing (optional; backend may not implement it) ------------
 
 export interface Briefing {

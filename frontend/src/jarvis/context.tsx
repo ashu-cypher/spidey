@@ -9,8 +9,13 @@ import {
 } from 'react';
 import type { ReactNode } from 'react';
 import type { ReactorMode } from '../components/ArcReactor';
-import { useJarvisVoice } from '../voice/jarvisVoice';
-import type { JarvisVoice, VoiceState, WakeMode } from '../voice/jarvisVoice';
+import { useJarvisVoice, VOICE_LANG_KEY, VOLUME_STORAGE_KEY } from '../voice/jarvisVoice';
+import type {
+  JarvisVoice,
+  VoiceLangSetting,
+  VoiceState,
+  WakeMode,
+} from '../voice/jarvisVoice';
 import { playSfx, setSfxEnabled, unlockAudio, useSpectrum } from '../audio/sfx';
 import { getBriefing } from '../api';
 import type { ChatHistoryTurn, WorkflowRun, WorkflowStep } from '../api';
@@ -31,6 +36,23 @@ export interface ChatInputApi {
 export interface SendChatOpts {
   /** True when the message came from the voice transcript (drives 'thinking'). */
   voice?: boolean;
+}
+
+/** Live phase of the streaming chat request, driven by real SSE events. */
+export type StreamPhase =
+  | 'idle'
+  | 'thinking'
+  | 'processing'
+  | 'speaking'
+  | 'awaiting'
+  | 'done'
+  | 'error';
+
+export interface StreamActivityItem {
+  id: number;
+  label: string;
+  done: boolean;
+  failed: boolean;
 }
 
 interface JarvisContextValue {
@@ -69,7 +91,7 @@ interface JarvisContextValue {
   speak: (text: string) => void;
   /** Registered by the chat UI; lets chips/voice send messages. */
   sendChat: (text: string, opts?: SendChatOpts) => void;
-  registerChatSend: (fn: ((text: string) => void) | null) => void;
+  registerChatSend: (fn: ((text: string, opts?: SendChatOpts) => void) | null) => void;
   chatBusy: boolean;
   setChatBusy: (b: boolean) => void;
   /** Bumped whenever a chat workflow completes (refreshes activity log). */
@@ -93,6 +115,28 @@ interface JarvisContextValue {
   history: ChatHistoryTurn[];
   appendHistory: (role: ChatHistoryTurn['role'], content: string) => void;
   clearHistory: () => void;
+  /** Voice language setting (recognition locale + TTS voice hint). */
+  voiceLang: VoiceLangSetting;
+  setVoiceLang: (v: VoiceLangSetting) => void;
+  /** TTS volume 0..1. */
+  volume: number;
+  setVolume: (v: number) => void;
+  /** Live phase of the streaming chat request (real SSE events). */
+  streamPhase: StreamPhase;
+  setStreamPhase: (p: StreamPhase) => void;
+  /** Real stream events for the activity feed; cleared on each new request. */
+  streamActivity: StreamActivityItem[];
+  pushStreamActivity: (label: string) => void;
+  markStreamActivityDone: () => void;
+  markStreamActivityError: () => void;
+  clearStreamActivity: () => void;
+  /** Chat UI registers its in-flight stream aborter; barge-in calls abortStream. */
+  registerStreamAbort: (fn: (() => void) | null) => void;
+  abortStream: () => void;
+  /** "Talk to Spidey" continuous conversation mode. */
+  conversationMode: boolean;
+  startConversation: () => void;
+  endConversation: () => void;
 }
 
 const JarvisContext = createContext<JarvisContextValue | null>(null);
@@ -106,6 +150,32 @@ export function useJarvis(): JarvisContextValue {
 let lineId = 0;
 /** Module-level: the proactive briefing must fire exactly once per session. */
 let briefingFired = false;
+/** Module-level id counter for stream activity items. */
+let activityId = 0;
+
+function readStoredVoiceLang(): VoiceLangSetting {
+  try {
+    const raw = localStorage.getItem(VOICE_LANG_KEY);
+    if (raw === 'en' || raw === 'hi' || raw === 'hinglish' || raw === 'auto') {
+      return raw;
+    }
+  } catch {
+    /* ignore */
+  }
+  return 'auto';
+}
+
+function readStoredVolume(): number {
+  try {
+    const raw = localStorage.getItem(VOLUME_STORAGE_KEY);
+    if (raw === null) return 1;
+    const n = parseFloat(raw);
+    if (Number.isNaN(n)) return 1;
+    return Math.min(1, Math.max(0, n));
+  } catch {
+    return 1;
+  }
+}
 
 export function JarvisProvider({ children }: { children: ReactNode }) {
   const [reactorMode, setReactorModeState] = useState<ReactorMode>('idle');
@@ -129,13 +199,25 @@ export function JarvisProvider({ children }: { children: ReactNode }) {
   const [activeSteps, setActiveSteps] = useState<WorkflowStep[]>([]);
   const [lastRun, setLastRun] = useState<WorkflowRun | null>(null);
   const [history, setHistory] = useState<ChatHistoryTurn[]>([]);
+  const [voiceLang, setVoiceLangState] = useState<VoiceLangSetting>(() => readStoredVoiceLang());
+  const [volume, setVolumeState] = useState<number>(() => readStoredVolume());
+  const [streamPhase, setStreamPhase] = useState<StreamPhase>('idle');
+  const [streamActivity, setStreamActivity] = useState<StreamActivityItem[]>([]);
+  const [conversationMode, setConversationMode] = useState(false);
 
   const flashRef = useRef<ReactorMode | null>(null);
   const flashTimer = useRef<number | null>(null);
   const baseModeRef = useRef<ReactorMode>('idle');
-  const chatSendRef = useRef<((text: string) => void) | null>(null);
+  const chatSendRef = useRef<((text: string, opts?: SendChatOpts) => void) | null>(null);
   const chatInputApiRef = useRef<ChatInputApi | null>(null);
   const voiceSendRef = useRef(false);
+  const streamAbortRef = useRef<(() => void) | null>(null);
+  const conversationModeRef = useRef(false);
+  const chatBusyRef = useRef(false);
+
+  useEffect(() => {
+    chatBusyRef.current = chatBusy;
+  }, [chatBusy]);
 
   const clearFlash = useCallback(() => {
     if (flashTimer.current !== null) {
@@ -193,11 +275,11 @@ export function JarvisProvider({ children }: { children: ReactNode }) {
 
   const sendChat = useCallback((text: string, opts?: SendChatOpts) => {
     voiceSendRef.current = opts?.voice === true;
-    chatSendRef.current?.(text);
+    chatSendRef.current?.(text, opts);
   }, []);
 
   const registerChatSend = useCallback(
-    (fn: ((text: string) => void) | null) => {
+    (fn: ((text: string, opts?: SendChatOpts) => void) | null) => {
       chatSendRef.current = fn;
     },
     [],
@@ -223,6 +305,48 @@ export function JarvisProvider({ children }: { children: ReactNode }) {
   );
   const clearHistory = useCallback(() => setHistory([]), []);
 
+  // -- stream activity feed (real SSE events only) ---------------------------
+
+  /** Push a new activity item; any still-running item is marked done first. */
+  const pushStreamActivity = useCallback((label: string) => {
+    const text = label.trim();
+    if (!text) return;
+    setStreamActivity((prev) => {
+      const settled = prev.map((i) =>
+        i.done || i.failed ? i : { ...i, done: true },
+      );
+      return [...settled, { id: activityId++, label: text, done: false, failed: false }];
+    });
+  }, []);
+
+  const markStreamActivityDone = useCallback(() => {
+    setStreamActivity((prev) =>
+      prev.map((i) => (i.failed ? i : { ...i, done: true })),
+    );
+  }, []);
+
+  const markStreamActivityError = useCallback(() => {
+    setStreamActivity((prev) =>
+      prev.map((i) => (i.done || i.failed ? i : { ...i, failed: true })),
+    );
+  }, []);
+
+  const clearStreamActivity = useCallback(() => setStreamActivity([]), []);
+
+  // -- in-flight stream abort (barge-in, end conversation, unmount) ----------
+
+  const registerStreamAbort = useCallback((fn: (() => void) | null) => {
+    streamAbortRef.current = fn;
+  }, []);
+
+  const abortStream = useCallback(() => {
+    try {
+      streamAbortRef.current?.();
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
   // Composite voice UX state: thinking = a voice-originated message is in
   // flight (chat busy) until the response starts.
   const voiceState: VoiceState = useMemo(() => {
@@ -233,8 +357,17 @@ export function JarvisProvider({ children }: { children: ReactNode }) {
   }, [engineState, chatBusy]);
 
   // Reactor mode is DERIVED from real app state — never set imperatively.
+  // Stream SSE events drive it: thinking → THINKING, tool_start → PROCESSING
+  // (tool_complete back to THINKING), speaking → SPEAKING, done → SUCCESS
+  // (then IDLE), error → ERROR, awaiting_confirmation → ATTENTION.
   const baseMode: ReactorMode = useMemo(() => {
     if (engineState === 'speaking') return 'speaking';
+    if (streamPhase === 'processing') return 'processing';
+    if (streamPhase === 'awaiting') return 'attention';
+    if (streamPhase === 'speaking') return 'speaking';
+    if (streamPhase === 'thinking') return 'thinking';
+    if (streamPhase === 'done') return 'success';
+    if (streamPhase === 'error') return 'error';
     if (activeSteps.some((s) => s.status === 'RUNNING' && s.type === 'tool')) {
       return 'processing';
     }
@@ -243,7 +376,7 @@ export function JarvisProvider({ children }: { children: ReactNode }) {
       return 'listening';
     }
     return 'idle';
-  }, [engineState, activeSteps, chatBusy]);
+  }, [engineState, streamPhase, activeSteps, chatBusy]);
 
   useEffect(() => {
     baseModeRef.current = baseMode;
@@ -287,6 +420,20 @@ export function JarvisProvider({ children }: { children: ReactNode }) {
         'Voice recognition is not supported in this browser.',
       );
     },
+    onBargeIn: () => {
+      // User spoke over J.A.R.V.I.S.: the in-flight chat stream is aborted
+      // so the new utterance is processed fresh (TTS was already cancelled
+      // by the engine).
+      abortStream();
+    },
+    onTtsQueueDrained: () => {
+      // Conversation loop: TTS finished and no stream is running — make sure
+      // the mic is back open (recognition usually never stopped, but Chrome
+      // can end it silently mid-stream).
+      if (conversationModeRef.current && !chatBusyRef.current) {
+        voice.ensureListening();
+      }
+    },
   });
 
   const speak = useCallback(
@@ -321,6 +468,67 @@ export function JarvisProvider({ children }: { children: ReactNode }) {
       voice.start();
     }
   }, [voice]);
+
+  const setVoiceLang = useCallback(
+    (v: VoiceLangSetting) => {
+      setVoiceLangState(v);
+      voice.setRecognitionLang(v);
+    },
+    [voice],
+  );
+
+  const setVolume = useCallback((v: number) => {
+    const clamped = Math.min(1, Math.max(0, v));
+    setVolumeState(clamped);
+    try {
+      localStorage.setItem(VOLUME_STORAGE_KEY, String(clamped));
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  /**
+   * "Talk to Spidey" continuous mode: mic stays open and the loop runs
+   * LISTENING → (final transcript) → PROCESSING (stream) → SPEAKING (TTS) →
+   * LISTENING automatically. Recognition's own end-of-speech ends each turn;
+   * barge-in aborts the stream mid-response.
+   */
+  const startConversation = useCallback(() => {
+    if (!voiceSupported) {
+      setVoiceError(
+        'Voice recognition is not supported in this browser — type instead.',
+      );
+      return;
+    }
+    unlockAudio();
+    setVoiceError(null);
+    voice.setStayAwake(true);
+    voice.wakeUp();
+    voice.start();
+    conversationModeRef.current = true;
+    setConversationMode(true);
+    playSfx('activation');
+    logTranscript('system', 'Conversation mode on — talk to Spidey, sir.');
+  }, [voice, voiceSupported, logTranscript]);
+
+  /**
+   * End conversation: stop recognition, cancel TTS + queue, abort the
+   * in-flight stream, drop the recognizer so the mic is released (the Web
+   * Speech API holds the mic internally — stopping recognition is the only
+   * release path; we never acquire a MediaStream of our own).
+   */
+  const endConversation = useCallback(() => {
+    conversationModeRef.current = false;
+    setConversationMode(false);
+    voice.setStayAwake(false);
+    voice.sleep();
+    voice.releaseMicrophone();
+    voice.stopSpeaking();
+    abortStream();
+    setStreamPhase('idle');
+    playSfx('blip');
+    logTranscript('system', 'Conversation ended — mic released.');
+  }, [voice, abortStream, logTranscript]);
 
   // Reactor spectrum: live when listening or speaking.
   const spectrumRef = useSpectrum(
@@ -394,6 +602,22 @@ export function JarvisProvider({ children }: { children: ReactNode }) {
       history,
       appendHistory,
       clearHistory,
+      voiceLang,
+      setVoiceLang,
+      volume,
+      setVolume,
+      streamPhase,
+      setStreamPhase,
+      streamActivity,
+      pushStreamActivity,
+      markStreamActivityDone,
+      markStreamActivityError,
+      clearStreamActivity,
+      registerStreamAbort,
+      abortStream,
+      conversationMode,
+      startConversation,
+      endConversation,
     }),
     [
       voice,
@@ -431,6 +655,21 @@ export function JarvisProvider({ children }: { children: ReactNode }) {
       history,
       appendHistory,
       clearHistory,
+      voiceLang,
+      setVoiceLang,
+      volume,
+      setVolume,
+      streamPhase,
+      streamActivity,
+      pushStreamActivity,
+      markStreamActivityDone,
+      markStreamActivityError,
+      clearStreamActivity,
+      registerStreamAbort,
+      abortStream,
+      conversationMode,
+      startConversation,
+      endConversation,
     ],
   );
 

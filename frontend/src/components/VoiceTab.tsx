@@ -4,6 +4,7 @@ import type { Health } from '../api';
 import { HudButton, HudChip, HudError, HudPanel, HudSelect, HudToggle } from './hud';
 import { useJarvis } from '../jarvis/context';
 import { listVoices, pickBritishVoice } from '../voice/jarvisVoice';
+import type { VoiceLangSetting } from '../voice/jarvisVoice';
 import { playSfx } from '../audio/sfx';
 import type { SfxName } from '../audio/sfx';
 
@@ -18,6 +19,13 @@ const SFX_TESTS: { name: SfxName; label: string }[] = [
   { name: 'hum', label: 'Hum' },
   { name: 'chime', label: 'Chime' },
   { name: 'alert', label: 'Alert' },
+];
+
+const LANG_OPTIONS: { value: VoiceLangSetting; label: string }[] = [
+  { value: 'auto', label: 'Auto (default)' },
+  { value: 'en', label: 'English' },
+  { value: 'hi', label: 'हिंदी' },
+  { value: 'hinglish', label: 'Hinglish' },
 ];
 
 function readNum(key: string, fallback: number): number {
@@ -48,6 +56,10 @@ export function VoiceTab() {
     speak,
     wakeMode,
     listening,
+    voiceLang,
+    setVoiceLang,
+    volume,
+    setVolume,
   } = useJarvis();
 
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
@@ -159,6 +171,32 @@ export function VoiceTab() {
           </div>
         </HudPanel>
 
+        {/* Language */}
+        <HudPanel title="Language">
+          <label className="hud-subtitle mb-2 block" htmlFor="voice-lang-select">
+            Voice language
+          </label>
+          <HudSelect
+            id="voice-lang-select"
+            value={voiceLang}
+            onChange={(e) => setVoiceLang(e.target.value as VoiceLangSetting)}
+            className="w-full"
+            disabled={!voiceSupported}
+          >
+            {LANG_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </HudSelect>
+          <p className="mt-2 text-xs text-cyan-200/50">
+            Auto follows your last detected language; browsers can&apos;t do
+            true dual-language recognition, so Hinglish and Auto listen in
+            English and switch the spoken voice by the reply&apos;s language.
+            Hindi replies prefer a Hindi voice when one is installed.
+          </p>
+        </HudPanel>
+
         {/* Voice selection */}
         <HudPanel title="Voice matrix">
           {!ttsSupported ? (
@@ -218,6 +256,22 @@ export function VoiceTab() {
                   step={0.05}
                   value={rate}
                   onChange={(e) => changeRate(parseFloat(e.target.value))}
+                  className="hud-range"
+                />
+              </div>
+
+              <div>
+                <label className="hud-subtitle mb-2 block" htmlFor="volume">
+                  Volume — {Math.round(volume * 100)}%
+                </label>
+                <input
+                  id="volume"
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={volume}
+                  onChange={(e) => setVolume(parseFloat(e.target.value))}
                   className="hud-range"
                 />
               </div>
