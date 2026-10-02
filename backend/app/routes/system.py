@@ -24,6 +24,8 @@ from app.providers.manager import (
     AVAILABLE_PROVIDERS,
     effective_model,
     get_selection,
+    is_model_degraded,
+    list_ollama_models,
     probe_provider,
     set_selection,
 )
@@ -62,11 +64,30 @@ def _rag_state() -> str:
     return "ready" if settings.vector_backend == "pgvector" else "degraded"
 
 
+def _model_display(provider: str, model: str | None, degraded: bool) -> str:
+    """Honest header label for the MODEL readout.
+
+    * Ollama live -> the model name, e.g. ``QWEN3:0.6B``.
+    * Anything else (degraded fallback, explicit rule_based, unreachable) ->
+      ``FALLBACK (RULE-BASED)``.
+    """
+    if provider == "ollama" and model and not degraded:
+        return model.upper()
+    if provider == "openai" and model:
+        return model.upper()
+    return "FALLBACK (RULE-BASED)"
+
+
 @router.get("/api/system/status")
 async def system_status():
     """Real service state. Every value is measured, not hardcoded:
 
     * ``provider``/``model`` — the runtime-persisted AI provider selection.
+    * ``model_display`` — honest header label: ``QWEN3:0.6B`` when the local
+      model is live, ``FALLBACK (RULE-BASED)`` when it is not.
+    * ``model_degraded`` — True when the startup probe found the configured
+      Ollama model unavailable (the agent keeps working on rule_based; the
+      first chat message in that state carries a one-time notice).
     * ``online`` — true (the endpoint answered).
     * ``memory`` — "ready" iff a DB query succeeded.
     * ``voice`` — this backend has no server-side speech models; STT/TTS run
@@ -75,9 +96,14 @@ async def system_status():
     * ``uptime_s`` — seconds since this process started.
     """
     selection = get_selection()
+    provider = selection["provider"]
+    model = effective_model(provider, selection.get("model"))
+    degraded = is_model_degraded()
     return {
-        "provider": selection["provider"],
-        "model": effective_model(selection["provider"], selection.get("model")),
+        "provider": provider,
+        "model": model,
+        "model_display": _model_display(provider, model, degraded),
+        "model_degraded": degraded,
         "online": True,
         "memory": _memory_state(),
         "voice": {"stt": "browser", "tts": "browser"},
@@ -94,6 +120,23 @@ async def get_provider_info():
         "provider": selection["provider"],
         "model": effective_model(selection["provider"], selection.get("model")),
         "available_providers": list(AVAILABLE_PROVIDERS),
+    }
+
+
+@router.get("/api/system/models")
+async def list_models():
+    """Models available on the local Ollama server (live ``/api/tags``).
+
+    Returns ``{"base_url", "models", "default"}``. 502 with a human-readable
+    message (never a traceback) when Ollama is unreachable.
+    """
+    ok, models, message = await list_ollama_models()
+    if not ok:
+        raise HTTPException(502, message)
+    return {
+        "base_url": settings.ollama_base_url.rstrip("/"),
+        "models": models,
+        "default": settings.ollama_model,
     }
 
 

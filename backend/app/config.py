@@ -6,7 +6,10 @@ class Settings(BaseSettings):
 
     spidey_provider: str = "rule_based"  # reads SPIDEY_PROVIDER (case-insensitive)
     openai_api_key: str = ""
-    ollama_base_url: str = "http://localhost:11434"
+    # MEW real-agent transformation: Ollama is the default intelligence.
+    # 127.0.0.1 (not localhost) avoids slow IPv6/localhost resolution stalls.
+    ollama_base_url: str = "http://127.0.0.1:11434"  # reads OLLAMA_BASE_URL
+    ollama_model: str = "qwen3:0.6b"  # reads OLLAMA_MODEL
     api_host: str = "127.0.0.1"
     api_port: int = 8000
     database_url: str = ""

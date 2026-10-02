@@ -51,6 +51,8 @@ class CalculatorTool(BaseTool):
 
     def _normalize(self, text: str) -> str:
         s = text.lower()
+        # Unicode operator signs users actually type (× ÷) -> ASCII.
+        s = s.replace("×", "*").replace("÷", "/")
         for word, op in _WORD_OPS:
             s = re.sub(rf"\b{re.escape(word)}\b", op, s)
         for word in _COMMAND_WORDS:

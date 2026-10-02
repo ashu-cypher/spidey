@@ -198,7 +198,8 @@ def test_provider_put_openai_selection_builds_openai_provider():
 
 def test_effective_model_defaults():
     assert effective_model("rule_based", None) is None
-    assert effective_model("ollama", None) == "llama3.1"
+    # MEW Phase 1: the Ollama default is OLLAMA_MODEL (spec: qwen3:0.6b).
+    assert effective_model("ollama", None) == settings.ollama_model
     assert effective_model("openai", None) == "gpt-4o-mini"
     assert effective_model("ollama", "mistral") == "mistral"
 

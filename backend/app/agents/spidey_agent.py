@@ -16,7 +16,7 @@ from app.config import settings
 from app.database import get_session
 from app.models import ConversationAttachment, ToolCall, WorkflowRun as WorkflowRunRow
 from app.providers.base import AIProvider, ProviderError
-from app.providers.manager import LLM_PROVIDER_NAMES
+from app.providers.manager import LLM_PROVIDER_NAMES, degraded_notice_once
 from app.providers.rule_based import RuleBasedProvider
 from app.services.language import (
     detect_language,
@@ -462,6 +462,36 @@ class SpideyAgent:
         return response.rstrip() + "\n" + "\n".join(lines)
 
     @staticmethod
+    def _with_degraded_notice(
+        response: str, conversation_id: str | None
+    ) -> str:
+        """Prepend the one-time degraded notice when the local model is
+        unavailable (MEW Phase 1).
+
+        ``degraded_notice_once`` returns the spec's exact notice text on the
+        FIRST call per session and None afterwards, so this is safe to apply
+        at every final-response assembly point: the notice can only ever
+        appear once per conversation. When the model is healthy the response
+        is returned untouched.
+        """
+        notice = degraded_notice_once(conversation_id)
+        if not notice:
+            return response
+        if response and response.strip():
+            return f"{notice}\n\n{response}"
+        return notice
+
+    @staticmethod
+    def _degraded_notice_text(conversation_id: str | None) -> str | None:
+        """Leading chunk for streamed turns: the one-time degraded notice
+        (with a blank line after it) on its first session appearance, else
+        None. Consumed via ``_stream_generate_and_emit(leading_text=...)``
+        so the notice is part of the voice summary, the deltas, and the
+        final text — not appended after streaming finished."""
+        notice = degraded_notice_once(conversation_id)
+        return f"{notice}\n\n" if notice else None
+
+    @staticmethod
     def _user_msg(exc: Exception) -> str:
         if isinstance(exc, ToolError):
             return exc.user_message
@@ -857,18 +887,30 @@ class SpideyAgent:
         lang: str,
         emit,
         intent: str = "chat_fallback",
+        leading_text: str | None = None,
     ) -> str:
         """Stream one generation through the routed provider, emitting
         ``voice_summary`` + ``delta`` events. Exactly one provider
         generation call per invocation (fast-path audit); a configured LLM
-        that fails before the first chunk falls back to local rule-based."""
-        return await self._emit_chunks(
-            self._resilient_stream_chunks(
-                message, context, history, lang, intent
-            ),
-            lang,
-            emit,
+        that fails before the first chunk falls back to local rule-based.
+
+        ``leading_text`` (e.g. the one-time degraded notice) is yielded as
+        the first chunk(s) BEFORE any provider delta, so it is part of the
+        voice summary, the deltas, and the returned full text alike.
+        """
+        chunks = self._resilient_stream_chunks(
+            message, context, history, lang, intent
         )
+        if leading_text:
+            chunks = self._prefixed_chunks(leading_text, chunks)
+        return await self._emit_chunks(chunks, lang, emit)
+
+    @staticmethod
+    async def _prefixed_chunks(leading_text: str, chunks):
+        """Yield ``leading_text`` first, then every chunk from ``chunks``."""
+        yield leading_text
+        async for chunk in chunks:
+            yield chunk
 
     @staticmethod
     async def _text_chunks(text: str):
@@ -953,11 +995,14 @@ class SpideyAgent:
             if intent in ("resume_analyze", "resume_improve"):
                 # Dedicated 9-stage resume pipeline ("Understand request" is
                 # already recorded above as stage 1).
-                return await self._run_resume_steps(
-                    _step, message, intent, run, engine,
-                    attachments=attachment_block,
-                    lang=lang,
-                    classification=classification,
+                return self._with_degraded_notice(
+                    await self._run_resume_steps(
+                        _step, message, intent, run, engine,
+                        attachments=attachment_block,
+                        lang=lang,
+                        classification=classification,
+                    ),
+                    conversation_id,
                 )
             if intent in ("document_qa", "chat_fallback"):
                 # MEW capability upgrade — "analyze/improve this" on a
@@ -970,7 +1015,7 @@ class SpideyAgent:
                     conversation_id,
                 )
                 if routed is not None:
-                    return routed
+                    return self._with_degraded_notice(routed, conversation_id)
             plan = build_plan(classification)
 
             if classification.get("requires_memory"):
@@ -1111,6 +1156,8 @@ class SpideyAgent:
             )
             # Web search runs cite their real sources (item: citations).
             response = self._ensure_search_citations(response, tool_results)
+            # One-time degraded notice (first message per session).
+            response = self._with_degraded_notice(response, conversation_id)
 
             await _step(
                 "Update memory",
@@ -1185,6 +1232,11 @@ class SpideyAgent:
                 input_data={"facts": facts[:500]},
             )
             response = self._ensure_search_citations(response, tool_results)
+            # One-time degraded notice (first message per session); the
+            # conversation id survives the confirm round-trip via pending.
+            response = self._with_degraded_notice(
+                response, pending.get("conversation_id")
+            )
             await _step(
                 "Update memory",
                 "memory_update",
@@ -1278,6 +1330,8 @@ class SpideyAgent:
                     lang=lang,
                     classification=classification,
                 )
+                # One-time degraded notice (first message per session).
+                response = self._with_degraded_notice(response, conversation_id)
                 await emit(
                     "state", {"state": "speaking", "label": "Speaking"}
                 )
@@ -1293,6 +1347,8 @@ class SpideyAgent:
                     conversation_id, emit=emit,
                 )
                 if routed is not None:
+                    # One-time degraded notice (first message per session).
+                    routed = self._with_degraded_notice(routed, conversation_id)
                     await emit(
                         "state", {"state": "speaking", "label": "Speaking"}
                     )
@@ -1457,7 +1513,10 @@ class SpideyAgent:
                 "Compose response",
                 "respond",
                 lambda: self._stream_generate_and_emit(
-                    message, facts, history, lang, emit, intent=intent
+                    message, facts, history, lang, emit, intent=intent,
+                    # One-time degraded notice rides the stream from the
+                    # first delta (voice summary + deltas + final text).
+                    leading_text=self._degraded_notice_text(conversation_id),
                 ),
                 input_data={"facts": facts[:500]},
             )
@@ -1556,7 +1615,13 @@ class SpideyAgent:
                 "Compose response",
                 "respond",
                 lambda: self._stream_generate_and_emit(
-                    message, facts, history, lang, emit, intent=intent
+                    message, facts, history, lang, emit, intent=intent,
+                    # One-time degraded notice rides the stream from the
+                    # first delta; the conversation id survives the confirm
+                    # round-trip via pending.
+                    leading_text=self._degraded_notice_text(
+                        pending.get("conversation_id")
+                    ),
                 ),
                 input_data={"facts": facts[:500]},
             )

@@ -24,6 +24,15 @@ async def test_calculator_rejects_code():
         await t.execute(text="__import__('os').system('x')")
 
 
+async def test_calculator_unicode_operators():
+    # MEW Phase 1 smoke case: users type × and ÷, not just * and /.
+    t = CalculatorTool()
+    r = await t.execute(text="What is 20 × 35?")
+    assert r["result"] == 700
+    r = await t.execute(text="100 ÷ 4")
+    assert r["result"] == 25
+
+
 async def test_memory_save_recall():
     t = MemoryTool()
     s = await t.execute(action="save", content="I am learning Python")

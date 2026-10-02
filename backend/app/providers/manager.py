@@ -32,7 +32,78 @@ AVAILABLE_PROVIDERS = ("rule_based", "ollama", "openai")
 # them; complex intents prefer them with a local fallback.
 LLM_PROVIDER_NAMES = ("ollama", "openai")
 
-_DEFAULT_MODELS = {"ollama": "llama3.1", "openai": "gpt-4o-mini"}
+_DEFAULT_MODELS = {"openai": "gpt-4o-mini"}
+
+
+def _ollama_default_model() -> str:
+    """The default Ollama model: OLLAMA_MODEL env, spec default qwen3:0.6b."""
+    from app.config import settings
+
+    return (settings.ollama_model or "").strip() or "qwen3:0.6b"
+
+
+def _ollama_base_url() -> str:
+    from app.config import settings
+
+    return settings.ollama_base_url.rstrip("/")
+
+
+async def _fetch_ollama_tags(base: str) -> list[str] | None:
+    """Model names from ``GET {base}/api/tags``.
+
+    Returns the list on success, ``None`` when Ollama is unreachable or the
+    payload is unusable. Never raises. A short timeout: this is a probe, not
+    a generation — no model is loaded by /api/tags.
+    """
+    try:
+        import httpx
+
+        # trust_env=False: Ollama is localhost — sandbox proxy env vars must
+        # never route or break this probe (httpx chokes on some no_proxy
+        # forms, e.g. IPv6 literals, raising InvalidURL instead of skipping
+        # the proxy).
+        async with httpx.AsyncClient(timeout=5.0, trust_env=False) as client:
+            resp = await client.get(f"{base}/api/tags")
+            resp.raise_for_status()
+            payload = resp.json()
+    except Exception:
+        logger.warning("ollama /api/tags probe failed for %s", base)
+        return None
+    models = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(models, list):
+        return None
+    return [
+        str(m.get("name") or "")
+        for m in models
+        if isinstance(m, dict) and m.get("name")
+    ]
+
+
+def _model_available(pulled: list[str], want: str) -> bool:
+    """True when ``want`` matches a pulled model name.
+
+    Ollama lists tags as ``name:tag`` (e.g. ``qwen3:0.6b``); a bare
+    ``qwen3`` request matches ``qwen3:0.6b`` via the ``want + ":"`` prefix.
+    """
+    want = (want or "").strip()
+    return any(p == want or p.startswith(want + ":") for p in pulled)
+
+
+async def list_ollama_models() -> tuple[bool, list[str], str]:
+    """Models available on the local Ollama server.
+
+    Returns ``(ok, models, message)`` — ``ok=False`` with a human-readable
+    message (never a traceback) when Ollama is unreachable.
+    """
+    pulled = await _fetch_ollama_tags(_ollama_base_url())
+    if pulled is None:
+        return (
+            False,
+            [],
+            "I couldn't reach the local Ollama server. "
+            "Start it with: bash ~/workspace/start-ollama.sh",
+        )
+    return True, pulled, "ok"
 
 _STATE_FILE = Path(__file__).resolve().parent.parent.parent / ".provider.json"
 _MAX_MODEL_LEN = 128
@@ -42,6 +113,12 @@ _cache: dict | None = None
 
 
 def _default_selection() -> dict:
+    # MEW real-agent transformation: the startup probe (lifespan) sets an
+    # honest default — ollama when the configured model is present, else
+    # rule_based with model_degraded=True. Until the probe runs (tests,
+    # direct imports), fall back to the SPIDEY_PROVIDER env default.
+    if _startup_default is not None:
+        return dict(_startup_default)
     from app.config import settings
 
     name = (settings.spidey_provider or "rule_based").strip().lower()
@@ -110,9 +187,15 @@ def _reset_cache() -> None:
 
 
 def effective_model(provider: str, model: str | None) -> str | None:
-    """The model name actually used: explicit choice or provider default."""
+    """The model name actually used: explicit choice or provider default.
+
+    The Ollama default is OLLAMA_MODEL (spec default qwen3:0.6b), read live
+    from settings so env changes and tests are honored.
+    """
     if provider == "rule_based":
         return None
+    if provider == "ollama":
+        return model or _ollama_default_model()
     return model or _DEFAULT_MODELS.get(provider)
 
 
@@ -127,7 +210,8 @@ def build_provider(name: str, model: str | None = None):
         from app.config import settings
 
         return OllamaProvider(
-            settings.ollama_base_url, model=model or _DEFAULT_MODELS["ollama"]
+            settings.ollama_base_url,
+            model=model or _ollama_default_model(),
         )
     if clean == "openai":
         from app.config import settings
@@ -149,30 +233,16 @@ async def probe_provider(name: str, model: str | None = None) -> tuple[bool, str
     if clean == "rule_based":
         return True, "ok"
     if clean == "ollama":
-        from app.config import settings
-
-        base = settings.ollama_base_url.rstrip("/")
-        want = model or _DEFAULT_MODELS["ollama"]
-        try:
-            import httpx
-
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.get(f"{base}/api/tags")
-                resp.raise_for_status()
-                payload = resp.json()
-        except Exception:
-            logger.warning("ollama probe failed for %s", base)
+        base = _ollama_base_url()
+        want = (model or "").strip() or _ollama_default_model()
+        pulled = await _fetch_ollama_tags(base)
+        if pulled is None:
             return (
                 False,
                 "I couldn't access the local AI model. "
                 "Please check that Ollama is running.",
             )
-        pulled = [
-            str(m.get("name") or "")
-            for m in (payload.get("models") or [])
-            if isinstance(m, dict)
-        ]
-        if not any(p == want or p.startswith(want + ":") for p in pulled):
+        if not _model_available(pulled, want):
             return (
                 False,
                 f"Ollama is running, but the model '{want}' isn't available "
@@ -218,3 +288,112 @@ async def probe_provider(name: str, model: str | None = None) -> tuple[bool, str
             )
         return True, "ok"
     return False, f"Unknown provider {name!r}."
+
+
+# --- Startup probe: Ollama as default, honest fallback (MEW Phase 1) --------
+
+# Set once by startup_probe() during app lifespan. When no explicit
+# .provider.json choice exists, _default_selection() prefers this over the
+# SPIDEY_PROVIDER env var.
+_startup_default: dict | None = None
+
+# True when the startup probe found the configured Ollama model unavailable.
+# Recorded even when the user explicitly selected another provider — it
+# describes the model, not the selection.
+_model_degraded: bool = False
+
+# conversation_id -> notice already shown. The degraded notice fires once
+# per session (first chat message), never spammed every message.
+_notice_shown_for: set[str] = set()
+
+# Exact spec wording for the one-time degraded notice.
+DEGRADED_NOTICE = (
+    "MEW's local model is unavailable. "
+    "Start Ollama or configure another provider."
+)
+
+
+def is_model_degraded() -> bool:
+    """True when the startup probe found the configured Ollama model
+    unavailable (unreachable server or model not pulled)."""
+    with _lock:
+        return _model_degraded
+
+
+def degraded_notice_once(conversation_id: str | None) -> str | None:
+    """The one-time degraded notice for this session, or None.
+
+    Returns the spec's exact notice text on the FIRST call for a session
+    while the model is degraded; every later call for that session returns
+    None. Sessions are keyed by ``conversation_id`` (the frontend persists
+    one per conversation); messages without one share a single anonymous
+    session key. When the model is healthy this always returns None.
+    """
+    if not is_model_degraded():
+        return None
+    key = (conversation_id or "").strip() or "__anonymous__"
+    with _lock:
+        if key in _notice_shown_for:
+            return None
+        _notice_shown_for.add(key)
+    return DEGRADED_NOTICE
+
+
+async def startup_probe() -> dict:
+    """Probe Ollama at startup; pick the default provider honestly.
+
+    * Configured model present in /api/tags -> default ``ollama``,
+      ``model_degraded=False``.
+    * Unreachable / model missing -> default ``rule_based``,
+      ``model_degraded=True`` (the agent keeps working; the first chat
+      message in that state carries the one-time degraded notice).
+
+    An explicit persisted choice (``PUT /api/system/provider`` wrote
+    ``.provider.json``) is never overridden — the probe only sets the
+    default used when no choice exists. The selection cache is reset so a
+    pre-probe ``get_selection()`` (e.g. module-level provider construction
+    at import time) cannot go stale.
+
+    Returns ``{"provider", "model", "model_degraded"}`` for startup logging.
+    Never raises.
+    """
+    global _startup_default, _model_degraded
+    base = _ollama_base_url()
+    want = _ollama_default_model()
+    pulled = await _fetch_ollama_tags(base)
+    available = pulled is not None and _model_available(pulled, want)
+    degraded = not available
+    selection = {
+        "provider": "ollama" if available else "rule_based",
+        "model": want if available else None,
+    }
+    with _lock:
+        _startup_default = dict(selection)
+        _model_degraded = degraded
+        # Force get_selection() to re-read: no file -> _startup_default;
+        # a persisted user choice still wins over the probe default.
+        global _cache
+        _cache = None
+    logger.info(
+        "startup model probe: provider=%s model=%s degraded=%s",
+        selection["provider"],
+        want,
+        degraded,
+    )
+    return {
+        "provider": selection["provider"],
+        "model": want,
+        "model_degraded": degraded,
+    }
+
+
+def _reset_startup_state() -> None:
+    """Test hook: clear the startup probe state (default, degraded flag,
+    shown-notice keys) so tests start clean."""
+    global _startup_default, _model_degraded
+    with _lock:
+        _startup_default = None
+        _model_degraded = False
+        _notice_shown_for.clear()
+        global _cache
+        _cache = None

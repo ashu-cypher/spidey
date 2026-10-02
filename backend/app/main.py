@@ -49,6 +49,20 @@ async def lifespan(app: FastAPI):
         f"(dim={provider.dim})",
         flush=True,
     )
+    # MEW real-agent transformation (Phase 1): probe Ollama at startup so
+    # the default provider is honest — ollama when the configured model
+    # (OLLAMA_MODEL) is present, rule_based fallback with
+    # model_degraded=True otherwise. An explicit persisted provider choice
+    # (PUT /api/system/provider) is never overridden. startup_probe never
+    # raises: an unreachable Ollama degrades, it does not crash boot.
+    from app.providers.manager import startup_probe
+
+    probe = await startup_probe()
+    print(
+        f"[spidey] Startup model probe: default={probe['provider']} "
+        f"model={probe['model']} degraded={probe['model_degraded']}",
+        flush=True,
+    )
     poller = asyncio.create_task(_reminder_poller(), name="reminder-poller")
     try:
         yield
