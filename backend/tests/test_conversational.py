@@ -127,6 +127,36 @@ def test_extract_search_query_latest():
     )
 
 
+def test_extract_search_query_strips_instruction():
+    # The search instruction is a command, not the query — the question
+    # before it is what should be searched.
+    assert (
+        SpideyAgent._extract_search_query(
+            "What are the latest AI developments? Search the web and tell me."
+        )
+        == "latest AI developments"
+    )
+    assert (
+        SpideyAgent._extract_search_query(
+            "what is the capital of France? search online please"
+        )
+        == "capital of France"
+    )
+    assert (
+        SpideyAgent._extract_search_query("Tell me about black holes - search the web")
+        == "black holes"
+    )
+    # Instruction filler alone is never a query.
+    assert SpideyAgent._extract_search_query("search the web") == ""
+    # Explicit "search the web for X" still works.
+    assert (
+        SpideyAgent._extract_search_query(
+            "Search the web for quantum computing breakthroughs"
+        )
+        == "quantum computing breakthroughs"
+    )
+
+
 # --- 3. Pronoun follow-up (chat_followup) ------------------------------------
 
 

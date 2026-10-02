@@ -2519,28 +2519,64 @@ class SpideyAgent:
 
     @staticmethod
     def _extract_search_query(message: str) -> str:
-        for pattern in (
-            r"search\s+for\s+the\s+latest\s+information\s+about\s+(.+)",
-            r"\bsearch\s+(?:the\s+)?latest\s+(?:news\s+)?(?:about|on)\s+(.+)",
+        msg = message.strip()
+        # 1. Explicit "search ... for/about X": the topic follows the instruction.
+        for pattern, prefix in (
+            (
+                r"search\s+for\s+the\s+latest\s+information\s+about\s+(.+)",
+                "latest information about ",
+            ),
+            (
+                r"\bsearch\s+(?:the\s+)?latest\s+(?:news\s+)?(?:about|on)\s+(.+)",
+                "latest ",
+            ),
+            (r"search\s+the\s+web\s+for\s+(.+)", ""),
+            (r"(?:find|get)\s+(?:me\s+)?information\s+about\s+(.+)", ""),
+            (r"\bgoogle\s+(.+)", ""),
         ):
-            m = re.search(pattern, message, re.IGNORECASE | re.DOTALL)
+            m = re.search(pattern, msg, re.IGNORECASE | re.DOTALL)
             if m and m.group(1).strip():
-                prefix = (
-                    "latest information about "
-                    if "information" in pattern
-                    else "latest "
-                )
-                return (prefix + m.group(1).strip()).rstrip(".")
-        for pattern in (
-            r"search\s+the\s+web\s+for\s+(.+)",
-            r"search\s+(?:the\s+)?(?:web|internet|online)\s+(?:for\s+)?(.+)",
-            r"(?:find|get)\s+(?:me\s+)?information\s+about\s+(.+)",
-            r"\bgoogle\s+(.+)",
-        ):
-            m = re.search(pattern, message, re.IGNORECASE | re.DOTALL)
-            if m and m.group(1).strip():
-                return m.group(1).strip().rstrip(".")
-        return message.strip()
+                topic = m.group(1).strip().rstrip(".")
+                # Reject when the "topic" is just instruction filler
+                # ("search the web and tell me" -> "and tell me" is not a query).
+                if not re.fullmatch(
+                    r"(?:and\s+)?(?:tell|let|show)\s+me|please|it|that|this",
+                    topic,
+                    re.IGNORECASE,
+                ):
+                    return (prefix + topic).strip()
+        # 2. Otherwise the search instruction ("search the web", "google it",
+        #    ...) is a command, not the query. Strip it wherever it sits;
+        #    what remains is the query.
+        #    "What are the latest AI developments? Search the web and tell me."
+        #    -> "latest AI developments"
+        stripped = re.sub(
+            r"(?:^|[.?!]\s*|[-:]\s*|\s+)(?:please\s+)?"
+            r"(?:search\s+(?:the\s+)?(?:web|internet|online)|google\s+it|look\s+it\s+up)"
+            r"(?:\s+and\s+(?:tell|let|show)\s+me)?"
+            r"(?:\s+please)?[.?!]?\s*$",
+            "",
+            msg,
+            flags=re.IGNORECASE,
+        ).strip().rstrip("-:").strip()
+        if not stripped:
+            # Message was only the instruction — the tool will ask for a query.
+            return ""
+        if stripped.lower() != msg.lower():
+            query = stripped.rstrip(".?!").strip()
+            # Drop leading question words for a tighter web query.
+            query = re.sub(
+                r"^(?:tell\s+me\s+about|what\s+(?:are|is|'s)|who\s+(?:are|is)|"
+                r"where\s+(?:are|is)|when\s+(?:was|were|is|did)|"
+                r"why\s+(?:is|are|did)|"
+                r"how\s+(?:do|does|can|much|many))\s+(?:the\s+)?",
+                "",
+                query,
+                flags=re.IGNORECASE,
+            ).strip()
+            if query:
+                return query
+        return msg.strip()
 
     @staticmethod
     def _extract_document(message: str) -> dict:
