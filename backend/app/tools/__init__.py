@@ -3,8 +3,13 @@ from app.tools.attachments import AttachmentTool
 from app.tools.briefing import BriefingTool
 from app.tools.calculator import CalculatorTool
 from app.tools.code import CodeTool
+from app.tools.computer import ComputerTool
 from app.tools.documents import DocumentTool
+from app.tools.generate import GenerateTool
+from app.tools.knowledge import KnowledgeTool
+from app.tools.learning import LearningTool
 from app.tools.memory_tool import MemoryTool
+from app.tools.project import ProjectTool
 from app.tools.rag_tool import RAGTool
 from app.tools.reminders import ReminderTool
 from app.tools.research import ResearchTool
@@ -21,8 +26,13 @@ __all__ = [
     "BriefingTool",
     "CalculatorTool",
     "CodeTool",
+    "ComputerTool",
     "DocumentTool",
+    "GenerateTool",
+    "KnowledgeTool",
+    "LearningTool",
     "MemoryTool",
+    "ProjectTool",
     "RAGTool",
     "ReminderTool",
     "ResearchTool",
@@ -52,6 +62,13 @@ TOOL_REGISTRY: dict[str, BaseTool] = {
     "code": CodeTool(),
     # Registered but always refuses: the classifier must never route here.
     "shell": ShellTool(),
+    # Computer control: interface scaffolding only — every action honestly
+    # reports "not implemented". The classifier must never route here.
+    "computer": ComputerTool(),
+    "generate": GenerateTool(),
+    "knowledge": KnowledgeTool(),
+    "learning": LearningTool(),
+    "project": ProjectTool(),
     # Sandboxed system access: metrics auto-run; allowlisted commands auto-run;
     # everything else is confirmation-gated by the agent (permission_for).
     "system": SystemControllerTool(),

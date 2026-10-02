@@ -113,6 +113,51 @@ _WIKIPEDIA = re.compile(
     r"|\bwiki\b",
     re.IGNORECASE,
 )
+# Output generation (spec 16): "make a PDF", "create a docx", "generate a
+# report", "make me a CSV". Must not swallow generate_prompt ("generate a
+# prompt for X") — that check runs first in _classify.
+_GENERATE_FILE = re.compile(
+    r"\b(make|create|generate|build|export)\b.{0,30}\b(pdf|docx|csv)\b"
+    r"|\b(make|create|generate)\b.{0,30}\b(report|presentation\s+outline)\b"
+    r"|\bconvert\b.{0,20}\bto\s+(pdf|docx)\b",
+    re.IGNORECASE,
+)
+# Compound plan (spec 3): "research X and make me a PDF/presentation".
+# Checked before _DEEP_RESEARCH so the planner runs the full pipeline.
+_RESEARCH_AND_GENERATE = re.compile(
+    r"\bresearch\b.{0,60}\b(and|then)\b.{0,40}\b(make|create|generate|give\s+me)\b"
+    r".{0,30}\b(pdf|presentation|report|docx|document)\b",
+    re.IGNORECASE,
+)
+# Project intelligence (spec 8): "explain my project", "analyze this project".
+_PROJECT_ANALYZE = re.compile(
+    r"\b(explain|analyze|analyse|inspect|review)\b.{0,40}\b(my\s+|this\s+)?project\b"
+    r"|\bwhere\s+is\b.{0,40}\bimplemented\b"
+    r"|\bfind\s+(todos?|bugs?|unused\s+code)\b.{0,20}\b(in\s+my\s+project|in\s+this\s+project)?",
+    re.IGNORECASE,
+)
+# Learning (spec 15): "teach me X", "quiz me", "I'm learning X".
+_LEARN = re.compile(
+    r"\bteach\s+me\b"
+    r"|\bquiz\s+me\b"
+    r"|\btest\s+me\s+on\b"
+    r"|\bi('|’)?m\s+learning\b"
+    r"|\blearning\s+progress\b",
+    re.IGNORECASE,
+)
+# Knowledge graph (spec 5): statements that assert facts + "what do you
+# remember about my X".
+_KNOWLEDGE_LEARN = re.compile(
+    r"\bmy\s+(main\s+|current\s+)?(project|skill|skills|course|goal|interest|assignment)s?"
+    r"\s+(is|are)\b"
+    r"|\b[A-Z][\w\-+.]*\s+uses?\s+[\w\s]+(,|\band\b)",
+    re.IGNORECASE,
+)
+_KNOWLEDGE_QUERY = re.compile(
+    r"\bwhat\s+do\s+you\s+(know|remember)\s+about\s+my\b"
+    r"|\blist\s+my\s+(projects|skills)\b",
+    re.IGNORECASE,
+)
 _DOCUMENT_CREATE = re.compile(
     r"\b(create|make|write)\b.{0,25}\b(documents?|notes?)\b", re.IGNORECASE
 )
@@ -577,6 +622,60 @@ class RuleBasedProvider(AIProvider):
                 "requires_memory": False,
                 "requires_tools": False,
                 "tools": [],
+                "response_mode": "answer",
+            }
+        # MEW upgrade — output generation (spec 16), knowledge graph (spec 5),
+        # project intelligence (spec 8), learning (spec 15). Checked after
+        # generate_prompt so "generate a prompt for X" keeps its route.
+        if _RESEARCH_AND_GENERATE.search(text):
+            return {
+                "intent": "research_and_generate",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["research", "generate"],
+                "response_mode": "answer",
+            }
+        if _GENERATE_FILE.search(text):
+            return {
+                "intent": "generate_file",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["generate"],
+                "response_mode": "answer",
+            }
+        if _KNOWLEDGE_QUERY.search(text):
+            return {
+                "intent": "knowledge_query",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["knowledge"],
+                "response_mode": "answer",
+            }
+        if _KNOWLEDGE_LEARN.search(text) and not _REMEMBER.search(text):
+            # "remember that my current project is X" stays the memory
+            # intent; bare assertions ("My main project is X") feed the
+            # knowledge graph.
+            return {
+                "intent": "knowledge_learn",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["knowledge"],
+                "response_mode": "answer",
+            }
+        if _PROJECT_ANALYZE.search(text):
+            return {
+                "intent": "project_analyze",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["project"],
+                "response_mode": "answer",
+            }
+        if _LEARN.search(text):
+            return {
+                "intent": "learning",
+                "requires_memory": True,
+                "requires_tools": True,
+                "tools": ["learning"],
                 "response_mode": "answer",
             }
         if _EXPLAIN_HOW.search(text):

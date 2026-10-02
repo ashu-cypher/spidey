@@ -72,6 +72,11 @@ _VERIFY_KEYS: dict[str, tuple[str, ...]] = {
     "documents": ("document", "documents", "deleted"),
     "code": ("explanation",),
     "system": ("cpu_percent", "action", "needs_confirmation"),
+    "generate": ("file", "error"),
+    "knowledge": ("learned", "answer", "entities", "forgotten", "error"),
+    "learning": ("saved", "topics", "updated", "explanation", "quiz", "error"),
+    "project": ("analysis", "search", "error"),
+    "computer": ("implemented", "message"),
 }
 
 # Pending confirmations live in memory: token -> pending action. Single-use,
@@ -1277,6 +1282,16 @@ class SpideyAgent:
                 )
                 if routed is not None:
                     return self._with_degraded_notice(routed, conversation_id)
+            if intent == "research_and_generate":
+                # MEW upgrade — smart task planner (spec 3): a compound
+                # request like "research X and make me a PDF" runs as an
+                # internal sequential plan with per-step verification.
+                return self._with_degraded_notice(
+                    await self._run_plan_steps(
+                        _step, message, run, engine, lang=lang,
+                    ),
+                    conversation_id,
+                )
             # MEW Phase 2 — vision gate (spec 18): an image attachment plus
             # an image question is answered by a vision-capable model only.
             # A text-only model gets the honest unsupported reply — the
@@ -2070,6 +2085,82 @@ class SpideyAgent:
             classification=classification,
         )
 
+    async def _run_plan_steps(
+        self, _step, message: str, run, engine, lang: str = "en",
+    ) -> str:
+        """Smart task planner (spec 3) — sequential multi-step execution.
+
+        Currently handles the compound "research X and make me a PDF /
+        presentation" request as an internal plan:
+
+          1. Understand request (done by the caller)
+          2. Research the topic (research tool)
+          3. Generate the file (generate tool, from the report)
+          4. Verify results (file exists, report non-empty)
+          5. Compose response
+
+        Every step is narrated via _step (real tool_start events, no fake
+        timers). A failed step ends the run with the step's honest error —
+        never "Done" when only an attempt was made.
+        """
+        # Topic: text between "research" and "and/then".
+        topic = ""
+        m = re.search(
+            r"\bresearch\b\s+(.+?)\s+\b(and|then)\b",
+            message, re.IGNORECASE | re.DOTALL,
+        )
+        if m:
+            topic = m.group(1).strip().rstrip(".")
+        low = message.lower()
+        action = "outline" if "presentation" in low else "pdf"
+        title = f"Research: {topic}" if topic else "Research report"
+
+        try:
+            report_out = await _step(
+                "Research topic",
+                "tool",
+                lambda: self.tools["research"].execute(topic=topic or message),
+                input_data={"topic": topic or message},
+                tool_name="research",
+            )
+            report = (report_out or {}).get("report", "")
+            if not report.strip():
+                raise ToolError("The research came back empty — nothing to build on.")
+            file_out = await _step(
+                "Generate file",
+                "tool",
+                lambda: self.tools["generate"].execute(
+                    action=action, title=title, content=report,
+                ),
+                input_data={"action": action, "title": title},
+                tool_name="generate",
+            )
+            await _step(
+                "Verify results",
+                "verify",
+                lambda: self._verify(
+                    {"research": report_out, "generate": file_out}
+                ),
+            )
+        except ToolError as exc:
+            engine.finish_run(run.workflow_id, "failed", result=exc.user_message)
+            return exc.user_message
+
+        tool_results = {"research": report_out, "generate": file_out}
+        facts = self._compose_facts(
+            "generate_file", message, tool_results, [], lang=lang,
+        )
+        response = await _step(
+            "Respond",
+            "respond",
+            lambda: self._agenerate(
+                message, facts, [], lang, intent="generate_file"
+            ),
+            input_data={"facts": facts[:500]},
+        )
+        engine.finish_run(run.workflow_id, "completed", result=response)
+        return response
+
     async def _run_resume_steps(
         self, _step, message: str, intent: str, run, engine,
         attachments: str = "",
@@ -2379,6 +2470,18 @@ class SpideyAgent:
             return {"topic": message}
         if tool == "briefing":
             return {}
+        if tool == "generate":
+            return self._extract_generate_args(message, conversation_id)
+        if tool == "knowledge":
+            if intent == "knowledge_learn":
+                return {"action": "learn", "statement": message}
+            if intent == "knowledge_query":
+                return {"action": "query", "query": message}
+            return {"action": "list"}
+        if tool == "project":
+            return self._extract_project_args(message)
+        if tool == "learning":
+            return self._extract_learning_args(message)
         if tool == "wikipedia":
             return {"topic": message}
         if tool == "system":
@@ -2604,6 +2707,108 @@ class SpideyAgent:
             if query:
                 return query
         return msg.strip()
+
+    # -- MEW upgrade: extractors for generate / project / learning ---------
+    def _extract_generate_args(
+        self, message: str, conversation_id: str | None
+    ) -> dict:
+        msg = message.strip()
+        low = msg.lower()
+        if "presentation outline" in low or re.search(r"\boutline\b", low):
+            action = "outline"
+        elif re.search(r"\bdocx\b", low):
+            action = "docx"
+        elif re.search(r"\bcsv\b", low):
+            action = "csv"
+        elif re.search(r"\b(markdown|md)\b", low):
+            action = "markdown"
+        elif re.search(r"\btext\b|\btxt\b", low):
+            action = "text"
+        elif re.search(r"\breport\b", low):
+            action = "pdf"
+        else:
+            action = "pdf"  # default for "make a pdf"
+        # Title: "titled X", "called X", or "of/about/on X".
+        title = "MEW output"
+        m = re.search(
+            r"(?:titled|called|named)\s+[\"']?([^\"'\n]+?)[\"']?\s*$", msg, re.IGNORECASE
+        ) or re.search(
+            r"\b(?:of|about|on)\s+([^\"'\n.?]{3,60})", msg, re.IGNORECASE
+        )
+        if m:
+            title = m.group(1).strip().rstrip(".")
+        # Content: prefer attachments when the message points at "this".
+        content = ""
+        if re.search(r"\b(this|it|the\s+document|attached|attachment)\b", low):
+            block = self._get_attachment_block(conversation_id)
+            # Strip the bracketed labels; keep the raw text for conversion.
+            content = re.sub(r"\[Attachment:[^\]]+\]\s*", "", block).strip()
+        if action == "csv":
+            raise ToolError(
+                "To make a CSV, tell me the rows — e.g. "
+                "'make a CSV with rows: name, age; Asha, 21'."
+            )
+        if not content:
+            raise ToolError(
+                "What should go in the file? Attach a document and say "
+                f"'make a {action} from this', or paste the content."
+            )
+        return {"action": action, "title": title, "content": content}
+
+    @staticmethod
+    def _extract_project_args(message: str) -> dict:
+        msg = message.strip()
+        # "where is authentication implemented" -> search mode.
+        m = re.search(
+            r"\bwhere\s+is\s+(.+?)\s+implemented\b", msg, re.IGNORECASE
+        )
+        if m:
+            return {
+                "action": "search",
+                "path": ".",
+                "pattern": m.group(1).strip(),
+            }
+        # Path: quoted, or after "at"/"in"/"of".
+        path = ""
+        m = re.search(r"[\"']([^\"']+)[\"']", msg)
+        if m and ("/" in m.group(1) or "\\" in m.group(1) or m.group(1).startswith("~")):
+            path = m.group(1)
+        else:
+            m = re.search(
+                r"\bproject\s+(?:at|in|of)\s+(\S+)", msg, re.IGNORECASE
+            )
+            if m:
+                path = m.group(1).rstrip(".,")
+        if not path:
+            raise ToolError(
+                "Which project directory should I analyze? Give me a path "
+                "on the machine running MEW — e.g. 'analyze my project at "
+                "~/myapp'."
+            )
+        return {"action": "analyze", "path": path}
+
+    @staticmethod
+    def _extract_learning_args(message: str) -> dict:
+        msg = message.strip()
+        low = msg.lower()
+        topic = ""
+        m = re.search(r"\bteach\s+me\s+(.+)", msg, re.IGNORECASE)
+        if m:
+            return {"action": "explain", "topic": m.group(1).strip().rstrip(".?")}
+        m = re.search(r"\bquiz\s+me(?:\s+on\s+(.+))?", msg, re.IGNORECASE)
+        if m:
+            topic = (m.group(1) or "").strip().rstrip(".?")
+            return {"action": "quiz", "topic": topic, "num_questions": 5}
+        m = re.search(r"\btest\s+me\s+on\s+(.+)", msg, re.IGNORECASE)
+        if m:
+            return {"action": "quiz", "topic": m.group(1).strip().rstrip(".?"),
+                    "num_questions": 5}
+        m = re.search(r"\bi['\u2019]?m\s+learning\s+(.+)", msg, re.IGNORECASE)
+        if m:
+            return {"action": "note", "topic": m.group(1).strip().rstrip(".?")}
+        if re.search(r"\bwhat\s+am\s+i\s+learning\b", low) or "learning progress" in low:
+            return {"action": "topics"}
+        return {"action": "topics"}
 
     @staticmethod
     def _extract_document(message: str) -> dict:
@@ -3098,6 +3303,89 @@ class SpideyAgent:
             )
         if intent == "resume_empty":
             return NO_CV_REPLY
+        # -- MEW upgrade: generate / knowledge / project / learning ---------
+        if intent == "generate_file":
+            f = tool_results.get("generate", {}).get("file", {})
+            if not f:
+                return ""
+            return pick(
+                f"Done — {f.get('title')} ({f.get('format', '').upper()}, "
+                f"{f.get('size_bytes', 0)} bytes). "
+                f"Download: {f.get('download_url')}",
+                f"Ho gaya — {f.get('title')} ({f.get('format', '').upper()}). "
+                f"Download: {f.get('download_url')}",
+                f"हो गया — {f.get('title')}। डाउनलोड: {f.get('download_url')}",
+            )
+        if intent in ("knowledge_learn", "knowledge_query"):
+            ans = (
+                tool_results.get("knowledge", {}).get("learned")
+                or tool_results.get("knowledge", {}).get("answer")
+            )
+            if isinstance(ans, list):
+                return "Noted:\n- " + "\n- ".join(ans)
+            return ans or ""
+        if intent == "project_analyze":
+            a = tool_results.get("project", {}).get("analysis") or tool_results.get(
+                "project", {}).get("search", {})
+            if "files_matched" in a:
+                files = a.get("files_matched", [])
+                if not files:
+                    return f"No matches for '{a.get('pattern')}' in the project."
+                lines = [f"Found '{a['pattern']}' in:"]
+                lines += [f"- {f}" for f in files[:10]]
+                return "\n".join(lines)
+            if not a:
+                return ""
+            lines = [f"Project: {a.get('path')}"]
+            langs = a.get("by_language", {})
+            if langs:
+                lines.append(
+                    "Code: " + ", ".join(f"{k or '?'}: {v}" for k, v in langs.items())
+                )
+            deps = a.get("dependencies", {})
+            if deps.get("python"):
+                lines.append(f"Python deps: {', '.join(deps['python'][:8])}")
+            if deps.get("node"):
+                lines.append(f"Node deps: {', '.join(deps['node'][:8])}")
+            if a.get("entry_points"):
+                lines.append(f"Entry points: {', '.join(a['entry_points'])}")
+            if a.get("test_files"):
+                lines.append(f"Tests: {len(a['test_files'])} test files")
+            todos = a.get("todos", [])
+            if todos:
+                lines.append(f"TODOs ({len(todos)}):")
+                lines += [f"- {t}" for t in todos[:5]]
+            git = a.get("git", {})
+            if git.get("branch"):
+                lines.append(
+                    f"Git: {git['branch']}, "
+                    f"{git.get('uncommitted_changes', 0)} uncommitted changes"
+                )
+            return "\n".join(lines)
+        if intent == "learning":
+            lr = tool_results.get("learning", {})
+            if "topics" in lr:
+                topics = lr["topics"]
+                if not topics:
+                    return "You're not tracking any learning topics yet — say \"I'm learning X\" to start."
+                lines = ["Your learning topics:"]
+                lines += [f"- {t['topic']} ({t['status']})" for t in topics]
+                return "\n".join(lines)
+            if "quiz" in lr:
+                q = lr["quiz"]
+                lines = [f"Quiz: {q['topic']}", f"_{q.get('disclaimer', '')}_", ""]
+                for i, item in enumerate(q.get("questions", []), 1):
+                    lines.append(f"{i}. {item['q']}")
+                return "\n".join(lines)
+            if "explanation" in lr:
+                return lr["explanation"].get("text", "")
+            if "saved" in lr:
+                s = lr["saved"]
+                return f"Noted — you're learning {s.get('topic')}."
+            if "updated" in lr:
+                u = lr["updated"]
+                return f"Updated: {u.get('topic')} → {u.get('status')}."
+            return ""
         return ""
 
     @staticmethod

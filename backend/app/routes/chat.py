@@ -612,6 +612,24 @@ async def download_doc(doc_id: str):
     )
 
 
+# MEW upgrade — output generation (spec 16): download generated files.
+@router.get("/api/generated/{file_id}/download")
+async def download_generated(file_id: str):
+    tool = TOOL_REGISTRY.get("generate")
+    path = tool.resolve_path(file_id) if tool else None
+    if path is None:
+        raise HTTPException(status_code=404, detail="Generated file not found.")
+    suffix = path.suffix.lower()
+    media = {
+        ".pdf": "application/pdf",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".md": "text/markdown; charset=utf-8",
+        ".txt": "text/plain; charset=utf-8",
+        ".csv": "text/csv; charset=utf-8",
+    }.get(suffix, "application/octet-stream")
+    return FileResponse(path, media_type=media, filename=f"mew-output{suffix}")
+
+
 @router.delete("/api/docs/{doc_id}")
 async def delete_doc(doc_id: str):
     # Direct REST delete: an explicit user click, no chat confirmation needed.
