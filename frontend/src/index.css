@@ -610,3 +610,21 @@ input[type='range'].hud-range::-moz-range-thumb {
 .mew-core-status .val {
   color: rgba(230, 237, 245, 0.85);
 }
+
+/* ------------------ Appearance prefs (Settings → Appearance) ------------------ */
+
+/* Reduce motion: kill avatar animation, pulses, blinks, transitions. */
+.mew-reduced-motion *,
+.mew-reduced-motion *::before,
+.mew-reduced-motion *::after {
+  animation: none !important;
+  transition: none !important;
+}
+
+/* Compact chat: hide the big spider avatar stage, always show the badge. */
+.mew-hide-avatar .mew-avatar-stage {
+  display: none !important;
+}
+.mew-hide-avatar .mew-avatar-badge {
+  display: flex !important;
+}

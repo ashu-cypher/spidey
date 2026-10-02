@@ -6,18 +6,21 @@ import { useMew } from '../mew/context';
 // ---------------------------------------------------------------------------
 // CoreStatus — developer-coded header readout. Polls GET /api/system/status
 // every 30 s against the exact backend contract
-//   { provider, model, online, memory, voice, rag }
-// VOICE comes from the LOCAL voice engine state (never faked). If the
-// backend is unreachable the readout shows OFFLINE honestly — no fake
-// "online".
+//   { provider, model, online, memory, voice: {stt, tts}, rag, uptime_s }
+// MODEL shows the real effective model (e.g. OLLAMA/QWEN3:0.6B or
+// RULE_BASED/FALLBACK). VOICE comes from the LOCAL voice engine state —
+// LISTENING appears only while the mic is genuinely active (never faked).
+// If the backend is unreachable the readout shows OFFLINE honestly — no
+// fake "online".
 // ---------------------------------------------------------------------------
 
 interface View {
   online: boolean | null; // null = not yet probed
   provider: string | null;
   model: string | null;
+  modelDisplay: string | null;
+  modelDegraded: boolean;
   memory: string | null;
-  voice: string | null;
 }
 
 function Row({ label, value, ok }: { label: string; value: string; ok: boolean | null }) {
@@ -37,8 +40,9 @@ export function CoreStatus() {
     online: null,
     provider: null,
     model: null,
+    modelDisplay: null,
+    modelDegraded: false,
     memory: null,
-    voice: null,
   });
 
   useEffect(() => {
@@ -52,14 +56,22 @@ export function CoreStatus() {
       }
       if (cancelled) return;
       if (info === null) {
-        setView({ online: false, provider: null, model: null, memory: null, voice: null });
+        setView({
+          online: false,
+          provider: null,
+          model: null,
+          modelDisplay: null,
+          modelDegraded: false,
+          memory: null,
+        });
       } else {
         setView({
           online: info.online,
           provider: info.provider || null,
           model: info.model || null,
+          modelDisplay: info.model_display || null,
+          modelDegraded: info.model_degraded === true,
           memory: info.memory || null,
-          voice: info.voice || null,
         });
       }
     };
@@ -83,11 +95,14 @@ export function CoreStatus() {
 
   const coreLabel =
     view.online === null ? '…' : view.online ? 'ONLINE' : 'OFFLINE';
+  // Prefer the backend-computed honest label (QWEN3:0.6B / FALLBACK
+  // (RULE-BASED)); fall back to provider/model when the backend predates it.
   const modelLabel =
     view.online !== true
       ? '—'
-      : [view.provider, view.model].filter(Boolean).join('/').toUpperCase() ||
-        'UNKNOWN';
+      : (view.modelDisplay ||
+          [view.provider, view.model].filter(Boolean).join('/').toUpperCase() ||
+          'UNKNOWN');
 
   return (
     <div className="mew-core-status" role="status" aria-label="MEW core status">
@@ -99,7 +114,15 @@ export function CoreStatus() {
       <Row
         label="MODEL"
         value={modelLabel}
-        ok={view.online === true ? true : view.online === false ? false : null}
+        ok={
+          view.online === true
+            ? view.modelDegraded
+              ? null // degraded fallback: honest label, neutral dot
+              : true
+            : view.online === false
+              ? false
+              : null
+        }
       />
       <Row
         label="MEMORY"

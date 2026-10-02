@@ -1,43 +1,10 @@
-import { Suspense, lazy, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { MewProvider, useMew, playSfx, proactiveVoiceEnabled } from './mew/context';
-import { HexGridBackground, HudPanel } from './components/hud';
+import { HexGridBackground } from './components/hud';
 import { MewEmblem } from './components/MewEmblem';
 import { CoreStatus } from './components/CoreStatus';
 import { MewView } from './components/MewView';
-import { ActivityPanel } from './components/ActivityPanel';
-import { LibraryTab } from './components/LibraryTab';
 import { SettingsTab } from './components/SettingsTab';
-
-// Heavy tabs load on first visit — MEW stays instant.
-const TasksPanel = lazy(() =>
-  import('./components/TasksPanel').then((m) => ({ default: m.TasksPanel })),
-);
-const RemindersPanel = lazy(() =>
-  import('./components/RemindersPanel').then((m) => ({ default: m.RemindersPanel })),
-);
-
-type TabId = 'mew' | 'activity' | 'library' | 'tasks' | 'settings';
-
-const TABS: { id: TabId; label: string }[] = [
-  { id: 'mew', label: 'MEW' },
-  { id: 'activity', label: 'Activity' },
-  { id: 'library', label: 'Library' },
-  { id: 'tasks', label: 'Tasks' },
-  { id: 'settings', label: 'Settings' },
-];
-
-function TabFallback() {
-  return (
-    <HudPanel>
-      <div className="flex items-center gap-3">
-        <MewEmblem size={28} />
-        <p className="font-mono text-xs uppercase tracking-[0.25em] text-cyan-200/40 hud-blink">
-          Loading module…
-        </p>
-      </div>
-    </HudPanel>
-  );
-}
 
 /** Global SSE event bus: /api/events/stream with reconnect backoff. */
 function useGlobalEvents() {
@@ -125,9 +92,15 @@ function HudClock() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// MEW is one screen: header (spider emblem + MEW + real status readouts +
+// settings icon), the spider avatar, ONE continuous conversation, and the
+// universal input. Settings is the single secondary view; activity, library,
+// and tasks now live inline inside the conversation.
+// ---------------------------------------------------------------------------
+
 function Shell() {
-  const { activityTick, activeTab, setActiveTab } = useMew();
-  const tab = activeTab as TabId;
+  const [settingsOpen, setSettingsOpen] = useState(false);
   useGlobalEvents();
 
   return (
@@ -162,63 +135,29 @@ function Shell() {
                 type="button"
                 onClick={() => {
                   playSfx('blip');
-                  setActiveTab('settings');
+                  setSettingsOpen((o) => !o);
                 }}
-                title="Settings"
-                aria-label="Open settings"
+                title={settingsOpen ? 'Back to conversation' : 'Settings'}
+                aria-label={settingsOpen ? 'Back to conversation' : 'Open settings'}
+                aria-pressed={settingsOpen}
                 className={`flex h-9 w-9 items-center justify-center rounded-lg border text-base transition-all ${
-                  tab === 'settings'
+                  settingsOpen
                     ? 'border-accent/70 bg-accent/15 text-accent'
                     : 'border-accent/25 bg-carbon/60 text-cyan-200/60 hover:border-accent/50 hover:text-accent'
                 }`}
               >
-                ⚙
+                {settingsOpen ? '✕' : '⚙'}
               </button>
             </div>
           </div>
         </header>
 
-        <nav className="mb-6 flex gap-2 overflow-x-auto pb-1" aria-label="Sections">
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => {
-                playSfx('blip');
-                setActiveTab(t.id);
-              }}
-              className={`shrink-0 px-4 py-2.5 font-mono text-[11px] uppercase tracking-[0.22em] transition-all ${
-                tab === t.id
-                  ? 'hud-btn hud-btn-primary'
-                  : 'hud-btn opacity-70 hover:opacity-100'
-              }`}
-              aria-current={tab === t.id ? 'page' : undefined}
-            >
-              {t.label}
-            </button>
-          ))}
-        </nav>
-
         <main>
-          {/* All sections stay mounted so voice, chat, and polling persist. */}
-          <div hidden={tab !== 'mew'}>
+          {/* Both views stay mounted so voice, chat, and polling persist. */}
+          <div hidden={settingsOpen}>
             <MewView />
           </div>
-          <div hidden={tab !== 'activity'}>
-            <ActivityPanel refreshKey={activityTick} />
-          </div>
-          <div hidden={tab !== 'library'}>
-            <LibraryTab />
-          </div>
-          <div hidden={tab !== 'tasks'}>
-            <div className="flex flex-col gap-6">
-              <Suspense fallback={<TabFallback />}>
-                <TasksPanel />
-                <RemindersPanel />
-              </Suspense>
-            </div>
-          </div>
-          <div hidden={tab !== 'settings'}>
+          <div hidden={!settingsOpen}>
             <SettingsTab />
           </div>
         </main>

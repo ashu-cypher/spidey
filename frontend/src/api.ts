@@ -56,7 +56,18 @@ export interface Health {
 
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
-    throw new Error(`API error ${res.status}: ${res.statusText}`);
+    // Surface the backend's human-readable message (e.g. a failed provider
+    // probe) instead of a bare status code — never a traceback.
+    let detail = '';
+    try {
+      const body = (await res.json()) as { detail?: unknown };
+      if (typeof body?.detail === 'string' && body.detail.trim()) {
+        detail = body.detail.trim();
+      }
+    } catch {
+      /* non-JSON error body — fall through to the status line */
+    }
+    throw new Error(detail || `API error ${res.status}: ${res.statusText}`);
   }
   return (await res.json()) as T;
 }
@@ -408,18 +419,27 @@ export async function getHealth(): Promise<Health> {
 
 // --- System status + provider (MEW spider-identity contract) ---------------
 //
-// GET /api/system/status → { provider, model, online, memory, voice, rag }
-// GET /api/system/provider → { provider, providers } ; PUT → { provider, providers }
+// GET /api/system/status → { provider, model, online, memory, voice, rag, uptime_s }
+//   (voice is a server-side descriptor object — STT/TTS run in the browser)
+// GET /api/system/provider → { provider, model, available_providers }
+// PUT /api/system/provider ← { provider, model? } → same shape as GET
+//   The backend probes the candidate first: unreachable Ollama/OpenAI (or a
+//   missing model) is rejected with a human-readable 502, never a traceback.
 // These endpoints are provided by the backend; every caller must handle
 // fetch failure (unreachable backend) with an honest OFFLINE state, never
 // a faked "online".
 
 export interface SystemStatusInfo {
   provider: string;
-  model: string;
+  model: string | null;
+  /** Honest header label (backend-computed): e.g. QWEN3:0.6B or FALLBACK (RULE-BASED). */
+  model_display?: string | null;
+  /** True when the configured model is unreachable and the agent fell back. */
+  model_degraded?: boolean;
   online: boolean;
   memory: string;
-  voice: string;
+  /** Server-side descriptor (STT/TTS run in the browser). */
+  voice: { stt: string; tts: string } | null;
   rag: string;
 }
 
@@ -430,7 +450,9 @@ export async function getSystemStatus(): Promise<SystemStatusInfo> {
 
 export interface ProviderInfo {
   provider: string;
-  providers: string[];
+  /** Effective model: explicit choice, or the provider default. */
+  model: string | null;
+  available_providers: string[];
 }
 
 export async function getSystemProvider(): Promise<ProviderInfo> {
@@ -438,12 +460,32 @@ export async function getSystemProvider(): Promise<ProviderInfo> {
   return json(res);
 }
 
-export async function putSystemProvider(provider: string): Promise<ProviderInfo> {
+export async function putSystemProvider(
+  provider: string,
+  model?: string | null,
+): Promise<ProviderInfo> {
   const res = await fetch('/api/system/provider', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ provider }),
+    body: JSON.stringify({ provider, model: model ?? null }),
   });
+  return json(res);
+}
+
+export interface OllamaModelsInfo {
+  base_url: string;
+  models: string[];
+  default: string;
+}
+
+/**
+ * GET /api/system/models — live Ollama model list (`/api/tags`).
+ * The backend worker is landing this endpoint in parallel: 404/502 means
+ * "no live list" and callers fall back to a free-text model field (the
+ * PUT probe still validates honestly).
+ */
+export async function listOllamaModels(): Promise<OllamaModelsInfo> {
+  const res = await fetch('/api/system/models');
   return json(res);
 }
 

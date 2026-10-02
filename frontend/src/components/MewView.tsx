@@ -18,6 +18,8 @@ import { unlockAudio } from '../audio/sfx';
 import { ArcReactor } from './ArcReactor';
 import type { ReactorMode } from './ArcReactor';
 import { Markdown } from './Markdown';
+import { TaskListCard, ReminderListCard } from './InlineCards';
+import { ContextIndicator } from './ContextIndicator';
 import { MewEmblem } from './MewEmblem';
 import { UniversalInput } from './UniversalInput';
 import { QuickActions } from './QuickActions';
@@ -37,6 +39,12 @@ interface ChatMessage {
   toolLines?: string[];
   /** True when the backend's memory_update step reported saved=true. */
   memoryUpdated?: boolean;
+  /**
+   * Live inline cards: when the reply's tool run used the tasks/reminders
+   * tools, the current list renders inline under the message (real API
+   * data, toggleable/deletable).
+   */
+  toolCards?: ('tasks' | 'reminders')[];
 }
 
 interface FailureCard {
@@ -400,6 +408,12 @@ const MessageBubble = memo(function MessageBubble({
             🕷 SPIDER SENSE — {message.toolLines.join(' · ')}
           </p>
         )}
+        {!isUser && message.toolCards && message.toolCards.length > 0 && (
+          <div className="mt-2">
+            {message.toolCards.includes('tasks') && <TaskListCard />}
+            {message.toolCards.includes('reminders') && <ReminderListCard />}
+          </div>
+        )}
         {!isUser && message.memoryUpdated && (
           <p className="mt-1.5 inline-flex items-center gap-1.5 rounded-full border border-violet-400/40 bg-violet-400/10 px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.15em] text-violet-300">
             🧠 Memory updated
@@ -476,6 +490,7 @@ export function MewView() {
     voiceState,
     notices,
     dismissNotice,
+    clearConversationTick,
   } = useMew();
 
   const conversationIdRef = useRef<string>(loadConversationId());
@@ -499,6 +514,8 @@ export function MewView() {
   // Tool-completion narration: count + whether an analysis-type tool ran.
   const toolsUsedRef = useRef(0);
   const sawAnalysisRef = useRef(false);
+  // Inline cards: which list tools (tasks/reminders) ran this turn.
+  const toolCardsRef = useRef<('tasks' | 'reminders')[]>([]);
   // messagesRef mirrors `messages` so streaming updates can target an id
   // without stale closures.
   const messagesRef = useRef<ChatMessage[]>([]);
@@ -635,6 +652,7 @@ export function MewView() {
     sawMemoryUpdateRef.current = false;
     toolsUsedRef.current = 0;
     sawAnalysisRef.current = false;
+    toolCardsRef.current = [];
     narratedLongOpRef.current = false;
     toolStartAtRef.current = 0;
     if (longOpTimerRef.current !== null) {
@@ -771,10 +789,21 @@ export function MewView() {
               }, 3000);
               break;
             }
-            case 'tool_complete':
+            case 'tool_complete': {
               setStreamPhase('thinking');
+              // A tasks/reminders tool run → render the live list inline
+              // under this reply (real tool name from the stream, not a
+              // guess).
+              const tool = typeof data.tool === 'string' ? data.tool : '';
+              if (
+                (tool === 'tasks' || tool === 'reminders') &&
+                !toolCardsRef.current.includes(tool)
+              ) {
+                toolCardsRef.current.push(tool);
+              }
               pushStreamActivity(label);
               break;
+            }
             case 'speaking':
               setStreamPhase('speaking');
               pushStreamActivity(label);
@@ -824,6 +853,10 @@ export function MewView() {
           patchMessage(assistantId, {
             text: finalText,
             toolLines: toolLines.length > 0 ? toolLines : undefined,
+            toolCards:
+              toolCardsRef.current.length > 0
+                ? [...toolCardsRef.current]
+                : undefined,
           });
           appendHistory('assistant', finalText);
           if (tracker) {
@@ -936,6 +969,13 @@ export function MewView() {
     logTranscript('system', 'Conversation cleared — starting fresh.');
   }
 
+  // Settings → "New conversation": clear this thread from the settings view.
+  useEffect(() => {
+    if (clearConversationTick > 0) newConversation();
+    // newConversation is stable enough here; the tick is the only trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clearConversationTick]);
+
   // Keep a fresh ref to send so chips/voice always call the latest closure.
   const sendRef = useRef(send);
   sendRef.current = send;
@@ -1019,6 +1059,11 @@ export function MewView() {
   }
 
   const chatting = messages.length > 0;
+  /** Files already sent as context in this conversation thread. */
+  const sentAttachments = useMemo(
+    () => messages.flatMap((m) => m.attachments ?? []),
+    [messages],
+  );
   const lastAssistantId = [...messagesRef.current]
     .reverse()
     .find((m) => m.role === 'assistant' && m.text)?.id;
@@ -1107,7 +1152,7 @@ export function MewView() {
         </div>
       )}
 
-      {!chatting ? (
+      {!chatting && (
         <div className="mb-6 text-center">
           <h2 className="glow font-mono text-xl font-bold tracking-[0.12em] text-white md:text-2xl">
             What are we working on?
@@ -1116,19 +1161,33 @@ export function MewView() {
             Ask me anything — or attach a file and I&apos;ll work with it.
           </p>
         </div>
-      ) : (
-        <div className="mb-3 flex items-center justify-between">
+      )}
+
+      {/* Chat header row: conversation label + context indicator + new thread. */}
+      {(chatting || pending.length > 0 || sentAttachments.length > 0) && (
+        <div className="mb-3 flex items-center justify-between gap-3">
           <p className="font-mono text-[11px] uppercase tracking-[0.25em] text-cyan-200/40">
-            Conversation
+            {chatting ? 'Conversation' : 'Context'}
           </p>
-          <button
-            type="button"
-            onClick={newConversation}
-            className="font-mono text-[10px] uppercase tracking-[0.2em] text-gold/70 hover:text-gold"
-            title="Clear messages and start a fresh conversation"
-          >
-            New conversation
-          </button>
+          <div className="flex items-center gap-2">
+            <ContextIndicator
+              pending={pending}
+              onRemovePending={(i) =>
+                setPending((prev) => prev.filter((_, idx) => idx !== i))
+              }
+              sent={sentAttachments}
+            />
+            {chatting && (
+              <button
+                type="button"
+                onClick={newConversation}
+                className="font-mono text-[10px] uppercase tracking-[0.2em] text-gold/70 hover:text-gold"
+                title="Clear messages and start a fresh conversation"
+              >
+                New conversation
+              </button>
+            )}
+          </div>
         </div>
       )}
 

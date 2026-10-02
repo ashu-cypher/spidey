@@ -122,9 +122,9 @@ interface MewContextValue {
   /** Bumped whenever a chat workflow completes (refreshes activity log). */
   activityTick: number;
   bumpActivity: () => void;
-  /** App-level tab navigation (mew/activity/library/tasks/settings). */
-  activeTab: string;
-  setActiveTab: (tab: string) => void;
+  /** Bumped when Settings asks to clear the conversation (MewView listens). */
+  clearConversationTick: number;
+  requestClearConversation: () => void;
   /** Prefill the chat input (does not send). */
   prefillChat: (text: string) => void;
   /** Focus the chat input. */
@@ -227,12 +227,16 @@ export function MewProvider({ children }: { children: ReactNode }) {
   const [chatBusy, setChatBusy] = useState(false);
   const [activityTick, setActivityTick] = useState(0);
   const bumpActivity = useCallback(() => setActivityTick((t) => t + 1), []);
+  const [clearConversationTick, setClearConversationTick] = useState(0);
+  const requestClearConversation = useCallback(
+    () => setClearConversationTick((t) => t + 1),
+    [],
+  );
   const [wakeMode, setWakeMode] = useState<WakeMode>('sleeping');
   const [listening, setListening] = useState(false);
   const [speaking, setSpeakingState] = useState(false);
   const [engineState, setEngineState] = useState<VoiceState>('idle');
   const [voiceError, setVoiceError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<string>('mew');
   const [activeSteps, setActiveSteps] = useState<WorkflowStep[]>([]);
   const [lastRun, setLastRun] = useState<WorkflowRun | null>(null);
   const [notices, setNotices] = useState<Notice[]>([]);
@@ -676,8 +680,8 @@ export function MewProvider({ children }: { children: ReactNode }) {
       setChatBusy,
       activityTick,
       bumpActivity,
-      activeTab,
-      setActiveTab,
+      clearConversationTick,
+      requestClearConversation,
       prefillChat,
       focusChatInput,
       registerChatInputApi,
@@ -740,7 +744,8 @@ export function MewProvider({ children }: { children: ReactNode }) {
       chatBusy,
       activityTick,
       bumpActivity,
-      activeTab,
+      clearConversationTick,
+      requestClearConversation,
       prefillChat,
       focusChatInput,
       registerChatInputApi,

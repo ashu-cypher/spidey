@@ -4,6 +4,11 @@ import { HudPanel, HudTitle } from './hud';
 import { MemoryPanel } from './MemoryPanel';
 import { ProviderPicker } from './ProviderPicker';
 import { VoiceTab } from './VoiceTab';
+import {
+  AppearanceSection,
+  ConversationSection,
+  PrivacySection,
+} from './SettingsSections';
 
 const SystemTab = lazy(() =>
   import('./SystemTab').then((m) => ({ default: m.SystemTab })),
@@ -44,24 +49,32 @@ function Collapsible({
 }
 
 // ---------------------------------------------------------------------------
-// Settings — voice settings (incl. English/हिंदी/Hinglish/Auto), persona,
-// memory management, plus System & Protocols as collapsible sections.
+// Settings — the ONE secondary view. AI model/provider (+ model picker,
+// wired to the backend's probe-validated provider API), voice + language,
+// memory management, appearance, privacy, conversation management, plus
+// System & Protocols as collapsible sections.
 // ---------------------------------------------------------------------------
 
 export function SettingsTab() {
   return (
-    <div className="flex flex-col gap-6">
+    <div className="mx-auto flex max-w-3xl flex-col gap-6">
       <HudTitle>Settings</HudTitle>
-
-      <HudPanel title="Voice & persona">
-        <VoiceTab />
-      </HudPanel>
 
       <ProviderPicker />
 
-      <HudPanel title="Memory management">
+      <HudPanel title="Voice & language">
+        <VoiceTab />
+      </HudPanel>
+
+      <HudPanel title="Memory">
         <MemoryPanel />
       </HudPanel>
+
+      <AppearanceSection />
+
+      <PrivacySection />
+
+      <ConversationSection />
 
       <Suspense
         fallback={
