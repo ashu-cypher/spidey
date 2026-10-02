@@ -182,14 +182,16 @@ _SUMMARIZE_DOC = re.compile(
 # "analyze my resume" / "improve my CV" always win over chat_fallback.
 _RESUME_IMPROVE = re.compile(
     r"\b(improve|rewrite|polish|fix|upgrade|strengthen|tailor)\b"
-    r".{0,40}\b(my\s+)?(resume|cv)\b",
+    r".{0,40}\b(my\s+)?(resume|cv)\b"
+    r"|\b(improve|rewrite)\b.{0,30}\b(my\s+)?(summary|objective|experience|projects|skills)\b",
     re.IGNORECASE,
 )
 _RESUME_ANALYZE = re.compile(
     r"\b(analy[sz]e|analysis|check|review|audit|critique|feedback\s+on|look\s+at)\b"
     r".{0,40}\b(my\s+)?(resume|cv)\b"
     r"|\b(my\s+)?(resume|cv)\s+(analysis|review|feedback)\b"
-    r"|\bwrong\s+with\b.{0,20}\b(my\s+)?(resume|cv)\b",
+    r"|\bwrong\s+with\b.{0,20}\b(my\s+)?(resume|cv)\b"
+    r"|\bwhat\s+are\s+my\s+(weaknesses|strengths)\b",
     re.IGNORECASE,
 )
 

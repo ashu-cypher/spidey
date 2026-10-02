@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { HudPanel, HudTitle } from './hud';
 import { MemoryPanel } from './MemoryPanel';
 import { ProviderPicker } from './ProviderPicker';
+import { TelegramConfig } from './TelegramConfig';
 import { VoiceTab } from './VoiceTab';
 import {
   AppearanceSection,
@@ -61,6 +62,8 @@ export function SettingsTab() {
       <HudTitle>Settings</HudTitle>
 
       <ProviderPicker />
+
+      <TelegramConfig />
 
       <HudPanel title="Voice & language">
         <VoiceTab />

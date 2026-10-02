@@ -229,3 +229,27 @@ async def test_telegram():
 
     ok, message = await test_connection()
     return {"ok": ok, "message": message}
+
+
+@router.post("/api/system/telegram/config")
+async def config_telegram(body: dict):
+    """Configure Telegram via Settings UI (alternative to env vars).
+
+    Body: {"bot_token": "...", "chat_id": "..."}. Stored in a backend-only
+    config file (~/.mew_telegram.json), never exposed to the frontend,
+    never committed to git. Validates via getMe before saving.
+    """
+    from app.services.telegram import save_config, test_connection
+
+    bot_token = (body.get("bot_token") or "").strip()
+    chat_id = (body.get("chat_id") or "").strip()
+    if not bot_token:
+        return {"ok": False, "message": "Bot token is required."}
+    if not chat_id:
+        return {"ok": False, "message": "Chat ID is required."}
+    # Validate the token works before saving.
+    ok, message = await test_connection(bot_token)
+    if not ok:
+        return {"ok": False, "message": f"Token invalid: {message}"}
+    save_config(bot_token, chat_id)
+    return {"ok": True, "message": "Telegram configured. Send a test reminder to verify delivery."}
