@@ -337,6 +337,12 @@ async def test_phase5_intents():
         "complete task 2": ("task_complete", "tasks"),
         "search the web for quantum computing": ("web_search", "search"),
         "find information about black holes": ("web_search", "search"),
+        "who is Ashutosh Dhagat": ("web_search", "search"),
+        "who was Albert Einstein": ("web_search", "search"),
+        "research quantum computing": ("deep_research", "research"),
+        "deep dive into AI safety": ("deep_research", "research"),
+        "brief me": ("briefing", "briefing"),
+        "morning briefing": ("briefing", "briefing"),
         "create a document titled Notes with content hello": (
             "document_create",
             "documents",

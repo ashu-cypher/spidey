@@ -36,6 +36,28 @@ async def _reminder_poller() -> None:
             logger.exception("reminder poller tick failed")
 
 
+async def _model_recovery_poller() -> None:
+    """Every 60s, re-probe Ollama while degraded; auto-recover when back.
+
+    The user shouldn't need to restart the backend after starting Ollama —
+    when the model comes back, the degraded flag clears, ollama becomes
+    the default again, and a "model_online" event is published so the UI
+    can update its status header. Never raises out of the loop.
+    """
+    from app.providers.manager import recheck_model
+    from app.services.event_bus import publish
+
+    while True:
+        await asyncio.sleep(60)
+        try:
+            if await recheck_model():
+                publish({"type": "model_online"})
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("model recovery poller tick failed")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()  # dev convenience bootstrap; canonical schema path is `alembic upgrade head`
@@ -64,10 +86,14 @@ async def lifespan(app: FastAPI):
         flush=True,
     )
     poller = asyncio.create_task(_reminder_poller(), name="reminder-poller")
+    model_poller = asyncio.create_task(
+        _model_recovery_poller(), name="model-recovery-poller"
+    )
     try:
         yield
     finally:
         poller.cancel()
+        model_poller.cancel()
 
 
 def create_app():

@@ -66,6 +66,8 @@ _VERIFY_KEYS: dict[str, tuple[str, ...]] = {
     "rag": ("results", "documents", "error"),
     "resume": ("analysis", "suggestions", "job_match", "versions", "version"),
     "search": ("results", "error"),
+    "research": ("report", "error"),
+    "briefing": ("briefing", "error"),
     "documents": ("document", "documents", "deleted"),
     "code": ("explanation",),
     "system": ("cpu_percent", "action", "needs_confirmation"),
@@ -194,6 +196,8 @@ _LLM_PREFERRED_INTENTS = frozenset(
 _TOOL_NARRATION = {
     "resume": "Analyzing your resume…",
     "search": "Searching the web…",
+    "research": "Deep researching…",
+    "briefing": "Preparing your briefing…",
     "rag": "Searching your documents…",
     "documents": "Working with your documents…",
     "code": "Reading the code…",
@@ -717,9 +721,12 @@ class SpideyAgent:
         notice = degraded_notice_once(conversation_id)
         if not notice:
             return response
+        from app.providers.manager import DEGRADED_SETUP_GUIDE
+
+        full_notice = f"{notice}\n\n{DEGRADED_SETUP_GUIDE}"
         if response and response.strip():
-            return f"{notice}\n\n{response}"
-        return notice
+            return f"{full_notice}\n\n{response}"
+        return full_notice
 
     @staticmethod
     def _degraded_notice_text(conversation_id: str | None) -> str | None:
@@ -2356,6 +2363,10 @@ class SpideyAgent:
             return {"action": "list"}
         if tool == "search":
             return {"query": self._extract_search_query(message)}
+        if tool == "research":
+            return {"topic": message}
+        if tool == "briefing":
+            return {}
         if tool == "system":
             # The rule-based intent system_status only ever requests metrics;
             # destructive phrasing is never routed to this tool.
@@ -2533,10 +2544,12 @@ class SpideyAgent:
             (r"search\s+the\s+web\s+for\s+(.+)", ""),
             (r"(?:find|get)\s+(?:me\s+)?information\s+about\s+(.+)", ""),
             (r"\bgoogle\s+(.+)", ""),
+            # "who is X" -> X (person/entity lookup).
+            (r"\bwho\s+(?:is|was|are|were)\s+(.+)", ""),
         ):
             m = re.search(pattern, msg, re.IGNORECASE | re.DOTALL)
             if m and m.group(1).strip():
-                topic = m.group(1).strip().rstrip(".")
+                topic = m.group(1).strip().rstrip(".?!")
                 # Reject when the "topic" is just instruction filler
                 # ("search the web and tell me" -> "and tell me" is not a query).
                 if not re.fullmatch(
@@ -2897,7 +2910,45 @@ class SpideyAgent:
                 url = r.get("url", "")
                 snippet = (r.get("snippet", "") or "")[:200]
                 lines.append(f"- {title} ({url})\n  {snippet}")
-            return "Found it. Here's what the web says:\n" + "\n".join(lines)
+            response = "Found it. Here's what the web says:\n" + "\n".join(lines)
+            # Person queries: warn when results don't match the asked name.
+            # Prevents the "these are different people" confusion and stops
+            # the model from blending them into a fake biography.
+            query = (search.get("query") or "").strip()
+            if query and re.fullmatch(
+                r"[A-Za-z]+(?:\s+[A-Za-z]+){1,2}", query
+            ):
+                name_lower = query.lower()
+                matched = any(
+                    name_lower in (r.get("title") or "").lower() for r in results[:5]
+                )
+                if not matched:
+                    response += (
+                        f"\n\nNote: I couldn't find a public profile specifically for "
+                        f"\"{query}\" — these results are about other people with "
+                        f"similar names. If this is you, tell me a bit about "
+                        f"yourself and I'll remember it."
+                    )
+            return response
+        if intent == "deep_research":
+            research = tool_results.get("research", {})
+            if research.get("error"):
+                return research["error"]
+            report = research.get("report", "")
+            if not report:
+                return (
+                    "The research came back empty — "
+                    "try a more specific topic."
+                )
+            return report
+        if intent == "briefing":
+            briefing = tool_results.get("briefing", {})
+            if briefing.get("error"):
+                return briefing["error"]
+            text = briefing.get("briefing", "")
+            if not text:
+                return "I couldn't put together a briefing right now."
+            return text
         if intent == "document_create":
             doc = tool_results.get("documents", {}).get("document", {})
             return (

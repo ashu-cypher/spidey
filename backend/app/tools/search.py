@@ -210,6 +210,7 @@ class SearchTool(BaseTool):
 
         results: list[dict] = []
         source_used = ""
+        any_source_responded = False
         try:
             async with _make_client(timeout=_TIMEOUT, headers=_UA) as client:
                 for source_name, search_fn in (
@@ -223,11 +224,22 @@ class SearchTool(BaseTool):
                     except Exception:
                         results = []
                     if results:
+                        any_source_responded = True
+                    # Skip junk: Bing sometimes returns degraded/unrelated
+                    # results (bot mitigation). Fall through to next source.
+                    if results and not self._is_relevant(results, query):
+                        results = []
+                    if results:
                         source_used = source_name
                         break
         except Exception:
             raise ToolError("Web search is unavailable right now.")
         if not results:
+            if any_source_responded:
+                raise ToolError(
+                    f"I searched the web but couldn't find relevant results "
+                    f"for \"{query}\"."
+                )
             raise ToolError("Web search is unavailable right now.")
         if mode == "news":
             for r in results:
@@ -238,6 +250,25 @@ class SearchTool(BaseTool):
             "search_source": source_used,
             "results": results,
         }
+
+    @staticmethod
+    def _is_relevant(results: list[dict], query: str) -> bool:
+        """Heuristic: at least one result title should contain a significant
+        query word. Filters out Bing's degraded/junk responses (e.g. oven
+        repair pages for a person name) so the chain falls through to the
+        next source instead of presenting garbage."""
+        words = [
+            w.lower()
+            for w in query.split()
+            if len(w) > 3 and w.lower() not in ("what", "when", "where", "which", "how", "latest")
+        ]
+        if not words:
+            return True
+        for r in results:
+            title = (r.get("title") or "").lower()
+            if any(w in title for w in words):
+                return True
+        return False
 
     # --- source 1: Bing HTML ------------------------------------------------
     @staticmethod

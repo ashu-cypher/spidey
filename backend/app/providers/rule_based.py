@@ -74,7 +74,25 @@ _WEB_SEARCH = re.compile(
     r"|\bsearch\s+the\s+web\s+for\b"
     r"|\b(find|get)\b.{0,25}\binformation\s+about\b"
     r"|\bsearch\b.{0,30}\b(latest|news)\b"
-    r"|\bgoogle\b",
+    r"|\bgoogle\b"
+    # Person/entity questions need fresh facts, not model knowledge —
+    # especially with a small local model that hallucinates biographies.
+    r"|\bwho\s+(is|was|are|were)\b",
+    re.IGNORECASE,
+)
+# Deep research: "research X", "deep dive into X" — multi-angle report.
+_DEEP_RESEARCH = re.compile(
+    r"\bdeep\s+dive\s+into\b"
+    r"|\bresearch\b"
+    r"|\binvestigate\b",
+    re.IGNORECASE,
+)
+# Briefing: "brief me", "morning briefing", "daily briefing".
+_BRIEFING = re.compile(
+    r"\bbrief\s+me\b"
+    r"|\bmorning\s+briefing\b"
+    r"|\bdaily\s+briefing\b"
+    r"|\bwhat's\s+on\s+(my\s+)?(schedule|agenda)\b",
     re.IGNORECASE,
 )
 _DOCUMENT_CREATE = re.compile(
@@ -672,6 +690,22 @@ class RuleBasedProvider(AIProvider):
                 "requires_tools": True,
                 "tools": ["tasks"],
                 "response_mode": "list",
+            }
+        if _DEEP_RESEARCH.search(text):
+            return {
+                "intent": "deep_research",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["research"],
+                "response_mode": "answer",
+            }
+        if _BRIEFING.search(text):
+            return {
+                "intent": "briefing",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["briefing"],
+                "response_mode": "answer",
             }
         if _WEB_SEARCH.search(text):
             return {

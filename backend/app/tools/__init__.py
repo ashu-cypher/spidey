@@ -1,11 +1,13 @@
 from app.tools.base import BaseTool, ToolError
 from app.tools.attachments import AttachmentTool
+from app.tools.briefing import BriefingTool
 from app.tools.calculator import CalculatorTool
 from app.tools.code import CodeTool
 from app.tools.documents import DocumentTool
 from app.tools.memory_tool import MemoryTool
 from app.tools.rag_tool import RAGTool
 from app.tools.reminders import ReminderTool
+from app.tools.research import ResearchTool
 from app.tools.resume import ResumeTool
 from app.tools.search import SearchTool
 from app.tools.shell import ShellTool
@@ -15,12 +17,14 @@ from app.tools.tasks import TaskTool
 __all__ = [
     "AttachmentTool",
     "BaseTool",
+    "BriefingTool",
     "CalculatorTool",
     "CodeTool",
     "DocumentTool",
     "MemoryTool",
     "RAGTool",
     "ReminderTool",
+    "ResearchTool",
     "ResumeTool",
     "SearchTool",
     "ShellTool",
@@ -39,6 +43,8 @@ TOOL_REGISTRY: dict[str, BaseTool] = {
     "rag": RAGTool(),
     "resume": ResumeTool(),
     "search": SearchTool(),
+    "research": ResearchTool(),
+    "briefing": BriefingTool(),
     "documents": DocumentTool(),
     "code": CodeTool(),
     # Registered but always refuses: the classifier must never route here.

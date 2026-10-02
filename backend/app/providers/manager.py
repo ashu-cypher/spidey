@@ -312,6 +312,18 @@ DEGRADED_NOTICE = (
     "Start Ollama or configure another provider."
 )
 
+# Actionable setup guide shown with the degraded notice so the user knows
+# exactly what to do. MEW keeps working (rule-based) in the meantime, and
+# auto-detects Ollama when it comes online — no restart needed.
+DEGRADED_SETUP_GUIDE = (
+    "To get the full MEW experience:\n"
+    "1. Install Ollama from https://ollama.com\n"
+    "2. Run: ollama pull qwen3:0.6b\n"
+    "3. Run: ollama serve\n"
+    "MEW will detect it automatically within a minute — no restart needed. "
+    "Or open Settings → Provider to use OpenAI instead."
+)
+
 
 def is_model_degraded() -> bool:
     """True when the startup probe found the configured Ollama model
@@ -397,3 +409,35 @@ def _reset_startup_state() -> None:
         _notice_shown_for.clear()
         global _cache
         _cache = None
+
+
+async def recheck_model() -> bool:
+    """Re-probe Ollama when degraded; auto-recover if it's back.
+
+    Called periodically by the model-recovery poller. If the model is not
+    degraded, does nothing. If Ollama has come back online with the
+    configured model, clears the degraded flag and restores ollama as the
+    default — the user doesn't need to restart the backend after starting
+    Ollama. Returns True when recovery happened. Never raises.
+    """
+    global _startup_default, _model_degraded
+    with _lock:
+        if not _model_degraded:
+            return False
+    try:
+        base = _ollama_base_url()
+        want = _ollama_default_model()
+        pulled = await _fetch_ollama_tags(base)
+        available = pulled is not None and _model_available(pulled, want)
+    except Exception:
+        return False
+    if not available:
+        return False
+    with _lock:
+        _model_degraded = False
+        _startup_default = {"provider": "ollama", "model": want}
+        _notice_shown_for.clear()
+        global _cache
+        _cache = None
+    logger.info("model recovery: Ollama is back, restored as default")
+    return True
