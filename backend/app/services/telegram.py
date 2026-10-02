@@ -14,10 +14,30 @@ Never claims a message was sent unless Telegram's API confirms it.
 from __future__ import annotations
 
 import logging
+import os
 
 import httpx
 
 from app.config import settings
+
+
+def _make_client(**kwargs) -> httpx.AsyncClient:
+    """Proxy-aware client (same pattern as search): works in sandboxes
+    and on normal machines. Telegram API calls must not crash on
+    proxy env vars."""
+    proxy = (
+        os.environ.get("https_proxy")
+        or os.environ.get("HTTPS_PROXY")
+        or os.environ.get("http_proxy")
+        or os.environ.get("HTTP_PROXY")
+    )
+    verify: str | bool = True
+    ca = os.environ.get("SSL_CERT_FILE")
+    if ca and os.path.exists(ca):
+        verify = ca
+    return httpx.AsyncClient(
+        trust_env=False, proxy=proxy, verify=verify, **kwargs
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +111,7 @@ async def validate_token(bot_token: str) -> tuple[bool, str]:
     if not token:
         return False, "Telegram bot token isn't configured yet."
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with _make_client(timeout=10.0) as client:
             resp = await client.get(f"{_TELEGRAM_API}/bot{token}/getMe")
             data = resp.json()
     except Exception as e:
@@ -110,7 +130,7 @@ async def test_connection(bot_token: str | None = None) -> tuple[bool, str]:
     if not token:
         return False, "Telegram bot token isn't configured yet."
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with _make_client(timeout=10.0) as client:
             resp = await client.get(f"{_TELEGRAM_API}/bot{token}/getMe")
             data = resp.json()
     except Exception as e:
@@ -136,7 +156,7 @@ async def send_message(text: str) -> tuple[bool, str]:
     if not is_configured():
         return False, "Telegram isn't configured yet."
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with _make_client(timeout=10.0) as client:
             resp = await client.post(
                 f"{_TELEGRAM_API}/bot{_get_token()}/sendMessage",
                 json={
