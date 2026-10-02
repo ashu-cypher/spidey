@@ -45,16 +45,25 @@ interface Particle {
   angle: number;
   speed: number;
   size: number;
+  depth: number; // 0 = near/bright, 1 = far/dim — particle depth layering
 }
 
 function makeParticles(): Particle[] {
   const ps: Particle[] = [];
-  for (let i = 0; i < 16; i += 1) {
+  for (let i = 0; i < 28; i += 1) {
+    const deep = i % 2 === 1;
     ps.push({
-      radius: 0.65 + ((i * 37) % 60) / 100, // 0.65–1.24 R, deterministic
-      angle: (i / 16) * Math.PI * 2,
-      speed: 0.5 + ((i * 53) % 100) / 120, // 0.5–1.33 rad/s
-      size: 1.2 + ((i * 29) % 20) / 12, // 1.2–2.8 px
+      radius: deep
+        ? 1.05 + ((i * 37) % 45) / 100 // far layer: 1.05–1.49 R
+        : 0.55 + ((i * 41) % 45) / 100, // near layer: 0.55–0.99 R
+      angle: (i / 28) * Math.PI * 2,
+      speed: deep
+        ? 0.25 + ((i * 53) % 60) / 120 // far drifts slow: 0.25–0.75 rad/s
+        : 0.7 + ((i * 47) % 110) / 120, // near moves fast: 0.7–1.6 rad/s
+      size: deep
+        ? 0.8 + ((i * 29) % 12) / 12 // far: 0.8–1.7 px
+        : 1.6 + ((i * 31) % 24) / 12, // near: 1.6–3.5 px
+      depth: deep ? 1 : 0,
     });
   }
   return ps;
@@ -81,11 +90,25 @@ export function ArcReactor({ mode, spectrum, size = 260 }: Props) {
     const cy = size / 2;
     const R = size * 0.36;
 
-    // Cached core radial gradient (rebuilt on resize only).
+    // Cached core radial gradient (rebuilt on resize only) — hot white
+    // center, cyan mid-band, faint gold halo at the rim.
     const coreGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * 0.5);
-    coreGrad.addColorStop(0, 'rgba(255,255,255,0.95)');
-    coreGrad.addColorStop(0.35, 'rgba(160,250,255,0.85)');
-    coreGrad.addColorStop(1, 'rgba(0,240,255,0.05)');
+    coreGrad.addColorStop(0, 'rgba(255,255,255,1)');
+    coreGrad.addColorStop(0.22, 'rgba(220,255,255,0.95)');
+    coreGrad.addColorStop(0.5, 'rgba(120,235,255,0.75)');
+    coreGrad.addColorStop(0.78, 'rgba(0,240,255,0.35)');
+    coreGrad.addColorStop(0.92, 'rgba(245,158,11,0.12)');
+    coreGrad.addColorStop(1, 'rgba(0,240,255,0.02)');
+
+    // Ambient outer glow wash behind the whole reactor.
+    const glowGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * 1.7);
+    glowGrad.addColorStop(0, 'rgba(0,240,255,0.16)');
+    glowGrad.addColorStop(0.55, 'rgba(0,240,255,0.06)');
+    glowGrad.addColorStop(1, 'rgba(0,240,255,0)');
+    const alertGlowGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * 1.7);
+    alertGlowGrad.addColorStop(0, 'rgba(239,68,68,0.20)');
+    alertGlowGrad.addColorStop(0.55, 'rgba(239,68,68,0.08)');
+    alertGlowGrad.addColorStop(1, 'rgba(239,68,68,0)');
 
     // Precomputed tick angles for the outer ring.
     const TICKS = 72;
@@ -120,11 +143,13 @@ export function ArcReactor({ mode, spectrum, size = 260 }: Props) {
 
       const ringColor = alert || error ? CRIMSON : CYAN;
 
-      // Spectrum average drives the listening pulse.
+      // Spectrum average drives audio-reactive effects in every mode:
+      // listening pulses, the core breathes with the live level.
       const spec = spectrum.current;
       let specAvg = 0;
       for (let i = 0; i < spec.length; i += 1) specAvg += spec[i];
       specAvg /= Math.max(1, spec.length);
+      const audioBoost = 1 + Math.min(1, specAvg) * 0.12;
 
       const breathe = 1 + 0.018 * Math.sin(t * 1.6);
       const pulse = listening
@@ -144,7 +169,18 @@ export function ArcReactor({ mode, spectrum, size = 260 }: Props) {
 
       const rOuter = R * 1.22 * pulse;
       const rMid = R * pulse;
-      const rCore = R * 0.46 * pulse;
+      const rCore = R * 0.46 * pulse * audioBoost;
+
+      // --- ambient glow wash (audio-reactive) ---
+      ctx.save();
+      ctx.globalAlpha =
+        (alert || error ? 0.55 + 0.45 * (alert ? alertPulse : errorPulse) : 0.8) *
+        (0.75 + 0.5 * Math.min(1, specAvg));
+      ctx.fillStyle = alert || error ? alertGlowGrad : glowGrad;
+      ctx.beginPath();
+      ctx.arc(cx, cy, R * 1.7, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
 
       // --- outer tick ring (slow rotation) ---
       ctx.save();
@@ -208,15 +244,21 @@ export function ArcReactor({ mode, spectrum, size = 260 }: Props) {
         ctx.restore();
       }
 
-      // --- thinking: drifting data particles ---
-      if (thinking) {
+      // --- data particles: two depth layers, always drifting; brighter
+      // and faster while thinking ---
+      {
+        const energy = thinking ? 1 : 0.35;
         ctx.save();
-        ctx.fillStyle = CYAN;
         for (const p of particles) {
-          p.angle += dt * p.speed;
+          p.angle += dt * p.speed * (thinking ? 1.6 : 0.5);
           const x = cx + Math.cos(p.angle) * R * p.radius * pulse;
           const y = cy + Math.sin(p.angle) * R * p.radius * pulse;
-          ctx.globalAlpha = 0.35 + 0.3 * Math.sin(t * 3 + p.angle * 4);
+          const twinkle = 0.5 + 0.5 * Math.sin(t * 3 + p.angle * 4);
+          ctx.globalAlpha =
+            energy * twinkle * (p.depth === 1 ? 0.35 : 0.8);
+          ctx.fillStyle = p.depth === 1 ? '#7dd3fc' : CYAN;
+          ctx.shadowColor = CYAN;
+          ctx.shadowBlur = p.depth === 1 ? 0 : 6;
           ctx.beginPath();
           ctx.arc(x, y, p.size, 0, Math.PI * 2);
           ctx.fill();
@@ -224,16 +266,23 @@ export function ArcReactor({ mode, spectrum, size = 260 }: Props) {
         ctx.restore();
       }
 
-      // --- middle glow ring (single shadowBlur use per frame) ---
+      // --- middle glow ring (stronger glow) ---
       ctx.save();
       ctx.strokeStyle = ringColor;
       ctx.globalAlpha =
         alert || error
           ? 0.5 + 0.5 * (alert ? alertPulse : errorPulse)
-          : 0.6 + 0.15 * Math.sin(t * 2.4);
+          : 0.65 + 0.2 * Math.sin(t * 2.4) + 0.15 * Math.min(1, specAvg);
       ctx.lineWidth = 2.5;
       ctx.shadowColor = ringColor;
-      ctx.shadowBlur = 18;
+      ctx.shadowBlur = 28;
+      ctx.beginPath();
+      ctx.arc(cx, cy, rMid, 0, Math.PI * 2);
+      ctx.stroke();
+      // halo echo ring for extra glow depth
+      ctx.globalAlpha *= 0.35;
+      ctx.lineWidth = 7;
+      ctx.shadowBlur = 34;
       ctx.beginPath();
       ctx.arc(cx, cy, rMid, 0, Math.PI * 2);
       ctx.stroke();
@@ -259,7 +308,7 @@ export function ArcReactor({ mode, spectrum, size = 260 }: Props) {
         ctx.restore();
       }
 
-      // --- core ---
+      // --- core (audio-reactive size + glow) ---
       ctx.save();
       ctx.globalAlpha =
         alert || error
@@ -268,6 +317,8 @@ export function ArcReactor({ mode, spectrum, size = 260 }: Props) {
             ? 0.85 + 0.15 * successPulse
             : 0.9;
       ctx.fillStyle = coreGrad;
+      ctx.shadowColor = alert || error ? CRIMSON : CYAN;
+      ctx.shadowBlur = 30 + 26 * Math.min(1, specAvg);
       ctx.beginPath();
       ctx.arc(cx, cy, rCore, 0, Math.PI * 2);
       ctx.fill();

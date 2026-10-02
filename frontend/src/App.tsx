@@ -1,52 +1,27 @@
 import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { MewProvider, useMew, playSfx } from './mew/context';
 import { HexGridBackground, HudPanel } from './components/hud';
-import { CommandCenter } from './components/CommandCenter';
+import { MewView } from './components/MewView';
 import { ActivityPanel } from './components/ActivityPanel';
+import { LibraryTab } from './components/LibraryTab';
+import { SettingsTab } from './components/SettingsTab';
 
-// Heavy tabs load on first visit — Command Center stays instant.
-const SystemTab = lazy(() =>
-  import('./components/SystemTab').then((m) => ({ default: m.SystemTab })),
-);
-const ProtocolsTab = lazy(() =>
-  import('./components/ProtocolsTab').then((m) => ({ default: m.ProtocolsTab })),
-);
-const MemoryPanel = lazy(() =>
-  import('./components/MemoryPanel').then((m) => ({ default: m.MemoryPanel })),
-);
-const KnowledgePanel = lazy(() =>
-  import('./components/KnowledgePanel').then((m) => ({ default: m.KnowledgePanel })),
-);
-const ResumePanel = lazy(() =>
-  import('./components/ResumePanel').then((m) => ({ default: m.ResumePanel })),
-);
+// Heavy tabs load on first visit — MEW stays instant.
 const TasksPanel = lazy(() =>
   import('./components/TasksPanel').then((m) => ({ default: m.TasksPanel })),
 );
 const RemindersPanel = lazy(() =>
   import('./components/RemindersPanel').then((m) => ({ default: m.RemindersPanel })),
 );
-const VoiceTab = lazy(() =>
-  import('./components/VoiceTab').then((m) => ({ default: m.VoiceTab })),
-);
 
-type TabId =
-  | 'command'
-  | 'workflows'
-  | 'system'
-  | 'security'
-  | 'knowledge'
-  | 'tasks'
-  | 'voice';
+type TabId = 'mew' | 'activity' | 'library' | 'tasks' | 'settings';
 
 const TABS: { id: TabId; label: string }[] = [
-  { id: 'command', label: 'Command Center' },
-  { id: 'workflows', label: 'Workflows & Logs' },
-  { id: 'system', label: 'System & Diagnostics' },
-  { id: 'security', label: 'Security & Protocols' },
-  { id: 'knowledge', label: 'Knowledge & Memory' },
-  { id: 'tasks', label: 'Tasks & Missions' },
-  { id: 'voice', label: 'Voice & Persona' },
+  { id: 'mew', label: 'MEW' },
+  { id: 'activity', label: 'Activity' },
+  { id: 'library', label: 'Library' },
+  { id: 'tasks', label: 'Tasks' },
+  { id: 'settings', label: 'Settings' },
 ];
 
 function TabFallback() {
@@ -61,9 +36,9 @@ function TabFallback() {
 
 /** Global SSE event bus: /api/events/stream with reconnect backoff. */
 function useGlobalEvents() {
-  const { speak, flashMode, logTranscript } = useMew();
-  const refs = useRef({ speak, flashMode, logTranscript });
-  refs.current = { speak, flashMode, logTranscript };
+  const { speak, flashMode, logTranscript, pushNotice } = useMew();
+  const refs = useRef({ speak, flashMode, logTranscript, pushNotice });
+  refs.current = { speak, flashMode, logTranscript, pushNotice };
 
   useEffect(() => {
     let es: EventSource | null = null;
@@ -81,10 +56,12 @@ function useGlobalEvents() {
             type: string;
             reminder: { id: string; title: string; remind_at: string };
           };
-          const { speak, flashMode, logTranscript } = refs.current;
+          const { speak, flashMode, logTranscript, pushNotice } = refs.current;
           playSfx('alert');
           flashMode('alert', 3000);
-          logTranscript('system', `Reminder due: ${data.reminder.title}`);
+          const text = `Reminder due: ${data.reminder.title}`;
+          logTranscript('system', text);
+          pushNotice(text);
           let proactive = true;
           try {
             proactive = localStorage.getItem('mew.proactiveVoice') !== '0';
@@ -104,7 +81,9 @@ function useGlobalEvents() {
             id: string;
             name: string;
           };
-          refs.current.logTranscript('system', `Protocol event: ${data.name}`);
+          const text = `Protocol event: ${data.name}`;
+          refs.current.logTranscript('system', text);
+          refs.current.pushNotice(text);
         } catch {
           /* ignore */
         }
@@ -178,10 +157,26 @@ function Shell() {
               Systems nominal
             </span>
             <HudClock />
+            <button
+              type="button"
+              onClick={() => {
+                playSfx('blip');
+                setActiveTab('settings');
+              }}
+              title="Settings"
+              aria-label="Open settings"
+              className={`flex h-9 w-9 items-center justify-center rounded-lg border text-base transition-all ${
+                tab === 'settings'
+                  ? 'border-accent/70 bg-accent/15 text-accent'
+                  : 'border-accent/25 bg-carbon/60 text-cyan-200/60 hover:border-accent/50 hover:text-accent'
+              }`}
+            >
+              ⚙
+            </button>
           </div>
         </header>
 
-        <nav className="mb-6 flex gap-2 overflow-x-auto pb-1" aria-label="Command sections">
+        <nav className="mb-6 flex gap-2 overflow-x-auto pb-1" aria-label="Sections">
           {TABS.map((t) => (
             <button
               key={t.id}
@@ -204,32 +199,14 @@ function Shell() {
 
         <main>
           {/* All sections stay mounted so voice, chat, and polling persist. */}
-          <div hidden={tab !== 'command'}>
-            <CommandCenter />
+          <div hidden={tab !== 'mew'}>
+            <MewView />
           </div>
-          <div hidden={tab !== 'workflows'}>
+          <div hidden={tab !== 'activity'}>
             <ActivityPanel refreshKey={activityTick} />
           </div>
-          <div hidden={tab !== 'system'}>
-            <Suspense fallback={<TabFallback />}>
-              <SystemTab />
-            </Suspense>
-          </div>
-          <div hidden={tab !== 'security'}>
-            <Suspense fallback={<TabFallback />}>
-              <ProtocolsTab />
-            </Suspense>
-          </div>
-          <div hidden={tab !== 'knowledge'}>
-            <div className="flex flex-col gap-6">
-              <Suspense fallback={<TabFallback />}>
-                <MemoryPanel />
-                <KnowledgePanel />
-                <HudPanel title="Resume intelligence">
-                  <ResumePanel />
-                </HudPanel>
-              </Suspense>
-            </div>
+          <div hidden={tab !== 'library'}>
+            <LibraryTab />
           </div>
           <div hidden={tab !== 'tasks'}>
             <div className="flex flex-col gap-6">
@@ -239,15 +216,13 @@ function Shell() {
               </Suspense>
             </div>
           </div>
-          <div hidden={tab !== 'voice'}>
-            <Suspense fallback={<TabFallback />}>
-              <VoiceTab />
-            </Suspense>
+          <div hidden={tab !== 'settings'}>
+            <SettingsTab />
           </div>
         </main>
 
         <footer className="mt-8 text-center font-mono text-[11px] uppercase tracking-[0.3em] text-cyan-200/30">
-          Stark HUD interface · MEW online
+          MEW · online
         </footer>
       </div>
     </div>
