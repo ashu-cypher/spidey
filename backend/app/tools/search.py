@@ -148,15 +148,15 @@ class SearchTool(BaseTool):
         url = (url or "").strip()
         parsed = urlparse(url)
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
-            raise ToolError("I need a valid http(s) URL to summarize, sir.")
+            raise ToolError("I need a valid http(s) URL to summarize.")
         try:
             text = await self._fetch_text(url)
         except ToolError:
             raise
         except Exception:
-            raise ToolError("I couldn't fetch that page, sir.")
+            raise ToolError("I couldn't fetch that page.")
         if not text:
-            raise ToolError("That page had no readable text to summarize, sir.")
+            raise ToolError("That page had no readable text to summarize.")
         # Lazy import: app.providers must not be imported at tools import time
         # (chat route imports both; keep the dependency one-directional).
         from app.providers import get_provider
@@ -169,7 +169,7 @@ class SearchTool(BaseTool):
                 context=f"Page URL: {url}\n\n{excerpt}",
             )
         except Exception:
-            raise ToolError("I fetched the page but couldn't summarize it, sir.")
+            raise ToolError("I fetched the page but couldn't summarize it.")
         return {"action": "summarize", "url": url, "summary": summary}
 
     @staticmethod
@@ -192,10 +192,10 @@ class SearchTool(BaseTool):
         try:
             html = raw.decode("utf-8", errors="ignore")
         except Exception:
-            raise ToolError("I couldn't read that page's content, sir.")
+            raise ToolError("I couldn't read that page's content.")
         extractor = _TextExtractor()
         try:
             extractor.feed(html)
         except Exception:
-            raise ToolError("I couldn't parse that page, sir.")
+            raise ToolError("I couldn't parse that page.")
         return extractor.text()

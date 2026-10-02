@@ -36,7 +36,8 @@ _TASK_LIST = re.compile(
 # reminders. These are checked BEFORE the generic task intents below.
 _REMINDER_CREATE = re.compile(
     r"\bremind me to\b|\bremind me (in|at)\b|\bset\s+(?:a\s+)?reminders?\b"
-    r"|\byaad\s+dila(na|o|dena)?\b",
+    r"|\byaad\s+dila(na|o|dena)?\b"
+    r"|\breminders?\s+de\s+dena\b",
     re.IGNORECASE,
 )
 _REMINDER_COMPLETE = re.compile(
@@ -119,7 +120,12 @@ _GREETING = re.compile(
     r"|नमस्ते",
     re.IGNORECASE,
 )
-_HELP = re.compile(r"\bhelp\b|what can you do|\bmadad\b", re.IGNORECASE)
+_HELP = re.compile(
+    r"\bhelp\b|what can you do|\bmadad\b"
+    r"|kya kar sakte ho|tum kya kar sakte|aap kya kar sakte"
+    r"|क्या कर सकते",
+    re.IGNORECASE,
+)
 # Knowledge base (RAG) intents — kept distinct from memory intents: the memory
 # tool holds personal facts, the rag tool searches uploaded documents.
 _KNOWLEDGE = re.compile(
@@ -535,14 +541,9 @@ class RuleBasedProvider(AIProvider):
                     "response_mode": "chat",
                     "topic": topic,
                 }
-        if _GREETING.search(text):
-            return {
-                "intent": "greeting",
-                "requires_memory": False,
-                "requires_tools": False,
-                "tools": [],
-                "response_mode": "greeting",
-            }
+        # Help/capability questions ("what can you do", "tum kya kar sakte
+        # ho") are checked before greeting so "Hey MEW, what can you do?"
+        # gets a capabilities answer instead of a plain hello.
         if _HELP.search(text):
             return {
                 "intent": "help",
@@ -550,6 +551,14 @@ class RuleBasedProvider(AIProvider):
                 "requires_tools": False,
                 "tools": [],
                 "response_mode": "help",
+            }
+        if _GREETING.search(text):
+            return {
+                "intent": "greeting",
+                "requires_memory": False,
+                "requires_tools": False,
+                "tools": [],
+                "response_mode": "greeting",
             }
         return {
             "intent": "chat_fallback",
@@ -615,13 +624,13 @@ class RuleBasedProvider(AIProvider):
             ]
             if not topics:
                 return pick(
-                    "We haven't discussed anything yet in this conversation, sir.",
+                    "We haven't discussed anything yet in this conversation.",
                     "Humne is conversation mein abhi kuch discuss nahi kiya hai.",
                     "हमने इस बातचीत में अभी कुछ चर्चा नहीं की है।",
                 )
             joined = ", then ".join(topics)
             return pick(
-                f"Earlier, sir, we discussed: {joined}.",
+                f"Earlier we discussed: {joined}.",
                 f"Pehle humne in baaton par discuss kiya: {joined}.",
                 f"पहले हमने इन विषयों पर चर्चा की: {joined}।",
             )
@@ -632,7 +641,7 @@ class RuleBasedProvider(AIProvider):
                 _last_user_turn(history)
             )
             return pick(
-                f"On {topic}, sir — happy to go deeper on that. Shall I search "
+                f"On {topic} — happy to go deeper. Shall I search "
                 f"your documents for what they say about {topic}, or look it "
                 "up on the web?",
                 f"{topic} ke baare mein — khushi se aur detail mein bata sakta "
@@ -644,12 +653,12 @@ class RuleBasedProvider(AIProvider):
         if intent == "greeting":
             return pick(
                 f"Hey! {settings.persona_name} here — ready when you are.",
-                "Hey! Main Spidey hoon — bolo, kya kaam hai?",
-                "नमस्ते! मैं स्पाइडी हूँ। आज मैं आपकी क्या मदद कर सकता हूँ?",
+                "Hey! Main MEW hoon — bolo, kya kaam hai?",
+                "नमस्ते! मैं MEW हूँ। आज मैं आपकी क्या मदद कर सकता हूँ?",
             )
         if intent == "help":
             return pick(
-                "Certainly, sir. I can calculate, remember things, manage "
+                "You bet — I can calculate, remember things, manage "
                 "tasks and reminders, search the web, search your uploaded "
                 "documents, create documents and notes, explain code, analyze "
                 "your resume, report system status, and chat. Try: "
@@ -674,7 +683,7 @@ class RuleBasedProvider(AIProvider):
             topic = _extract_topic(text)
             if topic:
                 return pick(
-                    f"I don't have that in my built-in knowledge, sir — shall "
+                    f"I don't have that in my built-in knowledge — shall "
                     f"I search the web for '{topic}'? Just say the word.",
                     f"Yeh mere built-in knowledge mein nahi hai — kya main web "
                     f"par '{topic}' search karoon? Bas bolo.",
@@ -682,7 +691,7 @@ class RuleBasedProvider(AIProvider):
                     "खोजूँ? बस कहिए।",
                 )
         return pick(
-            "Understood, sir — though I shall need something more concrete. "
+            "Got it — though I'll need something more concrete. "
             "A calculation, something to remember, or a task, perhaps?",
             "Samajh gaya — lekin thoda aur detail chahiye. Koi calculation, "
             "yaad rakhne wali baat, ya koi task?",

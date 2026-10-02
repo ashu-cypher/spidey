@@ -797,7 +797,7 @@ class SpideyAgent:
                             tool_name=tool_name,
                         )
                     except ToolError as exc:
-                        if tool_name == "search":
+                        if tool_name in ("search", "rag"):
                             # Graceful degradation: report the outage, not a crash.
                             tool_results[tool_name] = {
                                 "results": [],
@@ -1110,7 +1110,7 @@ class SpideyAgent:
                             tool_name=tool_name,
                         )
                     except ToolError as exc:
-                        if tool_name == "search":
+                        if tool_name in ("search", "rag"):
                             tool_results[tool_name] = {
                                 "results": [],
                                 "error": exc.user_message,
@@ -1747,7 +1747,7 @@ class SpideyAgent:
         if intent == "calculate":
             calc = tool_results.get("calculator", {})
             if "result" in calc:
-                return f"{calc.get('expression', '')} = {calc['result']}, sir."
+                return f"{calc.get('expression', '')} = {calc['result']}."
             return ""
         if intent == "remember":
             saved = tool_results.get("memory", {}).get("saved", {})
@@ -1789,7 +1789,7 @@ class SpideyAgent:
                 )
             reply = (
                 f"Task created: {title}" + (f" (due {due})" if due else "") + "."
-                " Done, sir — one less thing to worry about."
+                " Done — one less thing to worry about."
             )
             # Deterministic variety, one short sentence, no verbosity.
             if len(title) % 2 == 0:
@@ -1819,7 +1819,7 @@ class SpideyAgent:
             ).get("reminder", {})
             title = task.get("title") or task.get("text", "")
             return pick(
-                f'Done, sir — "{title}" marked complete.',
+                f'Done — "{title}" marked complete.',
                 f'Ho gaya! "{title}" complete kar diya.',
                 f'हो गया! "{title}" पूरा कर दिया।',
             )
@@ -1845,7 +1845,7 @@ class SpideyAgent:
                 return f"Ho gaya! {label}yaad dila dunga: {text}."
             return (
                 f"Reminder set: {text}" + (f" (at {at})" if at else "") + "."
-                " Consider it handled, sir."
+                " Consider it handled."
             )
         if intent == "reminder_list":
             reminders = tool_results.get("reminders", {}).get("reminders", [])
@@ -1901,7 +1901,7 @@ class SpideyAgent:
                 url = r.get("url", "")
                 snippet = (r.get("snippet", "") or "")[:200]
                 lines.append(f"- {title} ({url})\n  {snippet}")
-            return "Found it, sir. Here's what the web says:\n" + "\n".join(lines)
+            return "Found it. Here's what the web says:\n" + "\n".join(lines)
         if intent == "document_create":
             doc = tool_results.get("documents", {}).get("document", {})
             return (
@@ -1912,7 +1912,7 @@ class SpideyAgent:
             m = tool_results.get("system", {})
             if m.get("needs_confirmation"):
                 return m.get("proposal", "")
-            lines = ["All systems nominal, sir. Current readings:"]
+            lines = ["All systems nominal. Current readings:"]
             lines.append(f"- CPU load: {m.get('cpu_percent', 0.0):.1f}%")
             ram = m.get("ram") or {}
             lines.append(
@@ -1945,7 +1945,14 @@ class SpideyAgent:
             # passes. Honest when neither exists.
             parts: list[str] = []
             if attachments:
-                parts.append(attachments)
+                # User-facing label: "[Attachment: f (kind)]" is internal
+                # context markup — present it as a readable source header.
+                pretty = re.sub(
+                    r"\[Attachment: ([^\]]+?) \([a-z]+\)\]",
+                    r"From `\1`:",
+                    attachments,
+                )
+                parts.append(pretty)
             rag_facts = SpideyAgent._compose_rag_facts(tool_results)
             if rag_facts != LOW_CONFIDENCE_REPLY:
                 parts.append(rag_facts)
@@ -1970,7 +1977,7 @@ class SpideyAgent:
             num = v.get("version_number")
             label = v.get("label") or ""
             return pick(
-                f'Saved, sir — snapshotted as v{num} ("{label}").',
+                f'Saved — snapshotted as v{num} ("{label}").',
                 f'Save ho gaya — v{num} ("{label}") ke roop mein snapshot le liya.',
                 f'सहेज लिया — v{num} ("{label}") के रूप में स्नैपशॉट ले लिया।',
             )

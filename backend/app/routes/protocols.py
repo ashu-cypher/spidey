@@ -24,13 +24,13 @@ PROTOCOLS: list[dict] = [
         "id": "clean_slate",
         "name": "Clean Slate",
         "description": (
-            "A fresh start, sir. All non-essential systems stand down, "
+            "A fresh start. All non-essential systems stand down, "
             "caches are cleared, and the house returns to a pristine, "
             "ready state — as if the day had just begun."
         ),
         "sfx": "protocol_alert",
         "response_text": (
-            "Very well, sir. Wiping the slate clean — all non-essential "
+            "Very well. Wiping the slate clean — all non-essential "
             "systems standing down, house restored to ready state."
         ),
     },
@@ -38,12 +38,12 @@ PROTOCOLS: list[dict] = [
         "id": "house_party",
         "name": "House Party Protocol",
         "description": (
-            "Entertainment mode, sir. Lights dim to a warm glow, the music "
+            "Entertainment mode. Lights dim to a warm glow, the music "
             "queue opens, and the house prepares to receive guests in style."
         ),
         "sfx": "protocol_alert",
         "response_text": (
-            "House party protocol initiated, sir. Dimming the lights and "
+            "House party protocol initiated. Dimming the lights and "
             "queuing the playlist — do try to enjoy yourself."
         ),
     },
@@ -51,36 +51,36 @@ PROTOCOLS: list[dict] = [
         "id": "sentry_mode",
         "name": "Sentry Mode",
         "description": (
-            "Maximum vigilance, sir. All sensors at full alert, perimeter "
+            "Maximum vigilance. All sensors at full alert, perimeter "
             "monitoring engaged, and I shall keep a very close eye on things."
         ),
         "sfx": "protocol_alert",
         "response_text": (
-            "Sentry mode engaged, sir. All sensors at full alert."
+            "Sentry mode engaged. All sensors at full alert."
         ),
     },
     {
         "id": "mute_audio",
         "name": "Mute Audio",
         "description": (
-            "Silence, sir. All house audio output is muted at once — "
+            "Silence. All house audio output is muted at once — "
             "useful when discretion is the better part of valor."
         ),
         "sfx": "hud_blip",
         "response_text": (
-            "Audio muted, sir. Silent as a whisper."
+            "Audio muted. Silent as a whisper."
         ),
     },
     {
         "id": "silent_running",
         "name": "Silent Running",
         "description": (
-            "Minimal emissions, sir. Background activity throttled, "
+            "Minimal emissions. Background activity throttled, "
             "notifications hushed, and the house moves like a shadow."
         ),
         "sfx": "protocol_alert",
         "response_text": (
-            "Silent running, sir. Minimal emissions, maximum discretion."
+            "Silent running. Minimal emissions, maximum discretion."
         ),
     },
 ]

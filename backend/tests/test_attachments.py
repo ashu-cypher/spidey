@@ -152,7 +152,7 @@ async def test_explain_this_resolves_against_attachment():
     resp = await _run_agent("explain this", "conv-ctx")
     # No re-upload: the stored text grounds the reply.
     assert "arc energy" in resp
-    assert "[Attachment: notes.txt (document)]" in resp
+    assert "From `notes.txt`:" in resp
 
 
 async def test_most_recent_three_attachments_only():

@@ -147,7 +147,7 @@ async def test_chat_followup_reply_is_honest_and_names_topic(setup):
     history = [{"role": "user", "content": "What is RAG?"}]
     resp = await provider.agenerate("why would I use it?", history=history)
     assert "RAG" in resp
-    assert "sir" in resp.lower()
+    assert "documents" in resp.lower()
 
 
 async def test_chat_followup_without_topic_falls_through(setup):
@@ -196,9 +196,9 @@ async def test_conversation_recall_empty_history(setup):
     c = await provider.aclassify_intent("what were we talking about")
     assert c["intent"] == "conversation_recall"
     resp = await provider.agenerate("what were we talking about", history=[])
-    assert resp == "We haven't discussed anything yet in this conversation, sir."
+    assert resp == "We haven't discussed anything yet in this conversation."
     resp2 = await provider.agenerate("summarize our conversation", history=None)
-    assert resp2 == "We haven't discussed anything yet in this conversation, sir."
+    assert resp2 == "We haven't discussed anything yet in this conversation."
 
 
 # --- 5. History plumbing through POST /api/chat -------------------------------
@@ -376,7 +376,7 @@ async def test_task_create_personality(setup):
     run = engine.create_run("create a task to buy milk")
     resp = await agent.run("create a task to buy milk", run, engine)
     assert "buy milk" in resp
-    assert "Done, sir" in resp
+    assert "Done \u2014" in resp
     # Cleanup.
     listed = await TOOL_REGISTRY["tasks"].execute(action="list")
     for t in listed["tasks"]:
@@ -390,7 +390,7 @@ async def test_reminder_create_personality(setup):
     run = engine.create_run("remind me in 20 minutes to study")
     resp = await agent.run("remind me in 20 minutes to study", run, engine)
     assert "study" in resp
-    assert "Consider it handled, sir." in resp
+    assert "Consider it handled." in resp
     # Cleanup.
     listed = await TOOL_REGISTRY["reminders"].execute(action="list")
     for r in listed["reminders"]:
@@ -406,7 +406,7 @@ async def test_task_complete_personality_and_resolution(setup):
     engine = WorkflowEngine()
     run = engine.create_run("mark my Python project complete")
     resp = await agent.run("mark my Python project complete", run, engine)
-    assert "Done, sir" in resp
+    assert "Done \u2014" in resp
     assert "Python project" in resp
     await TOOL_REGISTRY["tasks"].execute(
         action="delete", id=created["task"]["id"]
@@ -424,7 +424,7 @@ def test_web_search_personality_prefix():
         },
         [],
     )
-    assert facts.startswith("Found it, sir.")
+    assert facts.startswith("Found it.")
 
 
 # --- Smoke-fix tests: calculator gate, definition offer, recall hygiene,
@@ -473,7 +473,7 @@ async def test_cross_resolve_complete_reminder_via_task_phrasing(setup):
         engine = WorkflowEngine()
         run = engine.create_run("mark qx7-study complete")
         resp = await agent.run("mark qx7-study complete", run, engine)
-        assert "Done, sir" in resp
+        assert "Done \u2014" in resp
         assert "qx7-study" in resp
         listed = await TOOL_REGISTRY["reminders"].execute(action="list")
         row = next(r for r in listed["reminders"] if r["id"] == created["reminder"]["id"])

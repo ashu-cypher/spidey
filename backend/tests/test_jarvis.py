@@ -143,7 +143,7 @@ def test_trigger_protocol_writes_audit():
     assert body["id"] == "sentry_mode"
     assert (
         body["response_text"]
-        == "Sentry mode engaged, sir. All sensors at full alert."
+        == "Sentry mode engaged. All sensors at full alert."
     )
     assert body["sfx"] == "protocol_alert"
     assert body["audit_id"]
@@ -223,7 +223,8 @@ async def test_rule_based_greeting_names_mew():
     assert "mew" in (await provider.agenerate("hello")).lower()
 
 
-async def test_rule_based_calc_says_sir():
+async def test_rule_based_calc_no_butler_sir():
+    # MEW has its own direct identity — no British-butler "sir".
     provider = RuleBasedProvider()
     facts = SpideyAgent._compose_facts(
         "calculate",
@@ -231,8 +232,9 @@ async def test_rule_based_calc_says_sir():
         {"calculator": {"expression": "2 + 2", "result": 4}},
         [],
     )
-    assert "sir" in facts.lower()
-    assert "sir" in (await provider.agenerate("what is 2+2", context=facts)).lower()
+    assert "sir" not in facts.lower()
+    assert "2 + 2 = 4" in facts
+    assert "sir" not in (await provider.agenerate("what is 2+2", context=facts)).lower()
 
 
 async def test_system_status_intent_routes_to_system_tool():

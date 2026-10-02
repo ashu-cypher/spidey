@@ -156,15 +156,15 @@ def test_detect_language_preferred_overrides():
 async def test_rule_based_hindi_greeting():
     provider = RuleBasedProvider()
     reply = await provider.agenerate("नमस्ते")
-    assert "स्पाइडी" in reply
+    assert "MEW" in reply
 
 
 async def test_rule_based_hinglish_greeting():
     provider = RuleBasedProvider()
-    c = await provider.aclassify_intent("namaste Spidey, mujhe madad chahiye")
+    c = await provider.aclassify_intent("namaste, kya haal hai")
     assert c["intent"] == "greeting"
-    reply = await provider.agenerate("namaste Spidey, mujhe madad chahiye")
-    assert "Main Spidey hoon" in reply
+    reply = await provider.agenerate("namaste, kya haal hai")
+    assert "Main MEW hoon" in reply
 
 
 async def test_rule_based_hinglish_fallback_not_english():
@@ -183,6 +183,13 @@ async def test_rule_based_hindi_classifier_intents():
     assert (await provider.aclassify_intent("ek kaam add karo"))["intent"] == "task_create"
     assert (await provider.aclassify_intent("yeh baat yaad rakhna"))["intent"] == "remember"
     assert (await provider.aclassify_intent("tumhe kya yaad hai"))["intent"] == "recall_memory"
+    # "reminder de dena" (give/set a reminder) is a create signal even when
+    # the sentence also contains "complete" (the task being reminded about).
+    assert (
+        await provider.aclassify_intent(
+            "Mujhe kal project complete karne ka reminder de dena"
+        )
+    )["intent"] == "reminder_create"
 
 
 # --- 5. Hindi date parsing -----------------------------------------------------
@@ -426,7 +433,7 @@ async def test_chat_stream_endpoint_hindi_lang():
     from app.routes import chat as chat_routes
 
     resp = await chat_routes.post_chat_stream(
-        chat_routes.ChatRequest(message="namaste Spidey, mujhe madad chahiye")
+        chat_routes.ChatRequest(message="namaste, kya haal hai")
     )
     raw = "".join([chunk async for chunk in resp.body_iterator])
     # Find the done frame and check the detected language travelled through.
@@ -434,7 +441,7 @@ async def test_chat_stream_endpoint_hindi_lang():
     assert frames
     done = json.loads(frames[0].splitlines()[1][6:])
     assert done["lang"] == "hinglish"
-    assert "Main Spidey hoon" in done["result"]
+    assert "Main MEW hoon" in done["result"]
 
 
 # --- 8. Fast-path audit: exactly one generation call per request ------------------

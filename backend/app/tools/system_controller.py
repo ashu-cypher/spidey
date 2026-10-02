@@ -187,7 +187,7 @@ class SystemControllerTool(BaseTool):
         if reason == "denied-path":
             # Outside the readable sandbox: hard denial, no confirmation path.
             raise ToolError(
-                "Denied, sir: file readers may only touch files under "
+                "Denied: file readers may only touch files under "
                 "~/workspace or /tmp."
             )
         if not auto and not confirmed:
@@ -216,7 +216,7 @@ class SystemControllerTool(BaseTool):
                 shell=False,
             )
         except subprocess.TimeoutExpired:
-            raise ToolError(f"Command timed out after {int(_RUN_TIMEOUT)}s, sir.")
+            raise ToolError(f"Command timed out after {int(_RUN_TIMEOUT)}s.")
         except FileNotFoundError:
             raise ToolError(f"Command not found: {parts[0]}.")
         except Exception:
@@ -236,10 +236,10 @@ class SystemControllerTool(BaseTool):
         try:
             parsed = urlparse(url)
         except Exception:
-            raise ToolError("That URL doesn't look valid, sir.")
+            raise ToolError("That URL doesn't look valid.")
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
             raise ToolError(
-                "Denied, sir: only http(s) URLs with a host may be opened."
+                "Denied: only http(s) URLs with a host may be opened."
             )
         if not confirmed:
             return {
