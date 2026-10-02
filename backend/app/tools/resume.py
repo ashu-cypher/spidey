@@ -648,6 +648,13 @@ async def _polish_with_provider(original: str, draft: str) -> str | None:
     # already appear in the original bullet.
     if extract_skills(polished) - extract_skills(original):
         return None
+    # No-invention guard, part 2: no invented NUMBERS either. A small model
+    # may obey "don't add skills" while still fabricating "98% satisfaction".
+    # Any numeric token (digits, %, currency) not present in the original is
+    # a fabrication — fall back to the rule-based draft.
+    _NUM_TOKEN = re.compile(r"\d+(?:\.\d+)?%?|\$|€|₹")
+    if set(_NUM_TOKEN.findall(polished)) - set(_NUM_TOKEN.findall(original)):
+        return None
     return polished
 
 

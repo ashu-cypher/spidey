@@ -327,3 +327,62 @@ async def test_resume_pipeline_nine_visible_steps():
     ]
     assert all(s.status == "COMPLETED" for s in finished.steps)
     assert "Quality score" in response
+
+
+async def test_polish_rejects_invented_numbers():
+    """The LLM polish must not fabricate metrics: invented numbers in the
+    polished bullet (not present in the original) fall back to the draft."""
+    from app.tools.resume import _polish_with_provider
+    import app.providers as providers_mod
+
+    class FakeProvider:
+        name = "ollama"
+
+        async def agenerate(self, message, context="", history=None, lang=None):
+            return "Built dashboard achieving 98% user satisfaction."
+
+    orig_get = providers_mod.get_provider
+    providers_mod.get_provider = lambda: FakeProvider()
+    try:
+        out = await _polish_with_provider(
+            "Built a security dashboard for monitoring.",
+            "Built a security dashboard for monitoring.",
+        )
+    finally:
+        providers_mod.get_provider = orig_get
+    assert out is None  # invented "98%" rejected
+
+
+async def test_polish_keeps_original_numbers():
+    """Numbers already in the original bullet are fine to keep."""
+    from app.tools.resume import _polish_with_provider
+    import app.providers as providers_mod
+
+    class FakeProvider:
+        name = "ollama"
+
+        async def agenerate(self, message, context="", history=None, lang=None):
+            return "Led migration serving 200 users."
+
+    orig_get = providers_mod.get_provider
+    providers_mod.get_provider = lambda: FakeProvider()
+    try:
+        out = await _polish_with_provider(
+            "Worked on migration serving 200 users.",
+            "Led migration serving 200 users.",
+        )
+    finally:
+        providers_mod.get_provider = orig_get
+    assert out == "Led migration serving 200 users."
+
+
+def test_resume_ordinal_matches_my_and_the():
+    """Spec TEST 6 phrasing: 'Rewrite my second project.' (not just 'the')
+    must route to resume_improve with the right project entry."""
+    from app.providers.rule_based import RuleBasedProvider
+    p = RuleBasedProvider()
+    for msg in ("Rewrite my second project.", "rewrite the second project"):
+        c = p._classify(msg, None)
+        assert c["intent"] == "resume_improve", msg
+        assert c["resume_section"] == "projects", msg
+        assert c["resume_entry"] == 1, msg  # second project -> index 1

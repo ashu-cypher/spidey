@@ -619,3 +619,14 @@ def test_attach_image_size_cap():
         data={"conversation_id": "p2-img-cap"},
     )
     assert resp.status_code == 422
+
+
+def test_reminder_create_with_natural_time_phrasing():
+    """Spec TEST 9 phrasing: 'Remind me tomorrow at 9 AM to study.' must hit
+    the reminder fast path, not chat_fallback."""
+    from app.providers.rule_based import RuleBasedProvider
+    p = RuleBasedProvider()
+    assert p._classify("Remind me tomorrow at 9 AM to study.", None)["intent"] == "reminder_create"
+    assert p._classify("remind me next friday at 5 to call mom", None)["intent"] == "reminder_create"
+    # ...and the list phrasing still routes to list, not create.
+    assert p._classify("remind me what my reminders are", None)["intent"] == "reminder_list"

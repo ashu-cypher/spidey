@@ -35,7 +35,9 @@ _TASK_LIST = re.compile(
 # Phase 5 intents. "remind me to" used to route to task_create; it now owns
 # reminders. These are checked BEFORE the generic task intents below.
 _REMINDER_CREATE = re.compile(
-    r"\bremind me to\b|\bremind me (in|at)\b|\bset\s+(?:a\s+)?reminders?\b"
+    r"\bremind me to\b|\bremind me (in|at)\b"
+    r"|\bremind me (tomorrow|today|tonight|next|on|every|each|morning|evening|afternoon|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b"
+    r"|\bset\s+(?:a\s+)?reminders?\b"
     r"|\byaad\s+dila(na|o|dena)?\b"
     r"|\breminders?\s+de\s+dena\b",
     re.IGNORECASE,
@@ -273,7 +275,7 @@ _RESUME_SECTION_Q = re.compile(
 )
 _RESUME_ORDINAL_RE = re.compile(
     r"\b(improve|rewrite|fix|polish|strengthen)\b.{0,25}"
-    r"\bthe\s+(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th)\s+"
+    r"\b(the|my)\s+(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th)\s+"
     r"(project|section|bullet)\b",
     re.IGNORECASE,
 )
@@ -426,8 +428,8 @@ class RuleBasedProvider(AIProvider):
         # improve of exactly one bullet in one section.
         m_ord = _RESUME_ORDINAL_RE.search(text)
         if m_ord:
-            noun = m_ord.group(3).lower()
-            ordinal = _ORDINALS.get(m_ord.group(2).lower())
+            noun = m_ord.group(4).lower()
+            ordinal = _ORDINALS.get(m_ord.group(3).lower())
             classification = {
                 "intent": "resume_improve",
                 "requires_memory": True,
