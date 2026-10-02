@@ -40,6 +40,7 @@ __all__ = [
     "WorkflowRun",
     "WorkflowStep",
     "ResumeVersion",
+    "ConversationAttachment",
     "Setting",
 ]
 
@@ -262,6 +263,26 @@ class ResumeVersion(Base):
     @content_text.setter
     def content_text(self, value: str) -> None:
         self.content = value
+
+
+class ConversationAttachment(Base):
+    """MEW upgrade — files attached to a conversation as chat context.
+
+    Uploaded via POST /api/chat/attach. The extracted text is bounded at
+    write time (~8k chars); the agent injects the most recent 3 per
+    conversation_id into the turn context as labeled blocks. No FK to
+    conversations: the id is the chat client's conversation key.
+    """
+
+    __tablename__ = "conversation_attachments"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_id)
+    conversation_id: Mapped[str] = mapped_column(String(36), index=True)
+    filename: Mapped[str] = mapped_column(String(512), default="")
+    # 'document' | 'resume' | 'image'
+    kind: Mapped[str] = mapped_column(String(16), default="document")
+    extracted_text: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
 
 class Setting(Base):

@@ -13,7 +13,7 @@ from app.agents.memory_manager import MemoryManager
 from app.agents.planner import build_plan
 from app.config import settings
 from app.database import get_session
-from app.models import ToolCall, WorkflowRun as WorkflowRunRow
+from app.models import ConversationAttachment, ToolCall, WorkflowRun as WorkflowRunRow
 from app.providers.base import AIProvider
 from app.services.language import (
     detect_language,
@@ -95,6 +95,13 @@ def _sanitize(value: Any) -> Any:
 # Chosen for the 384-dim providers used in Phase 3 (documented in README):
 # related query/chunk pairs score well above it, unrelated pairs below.
 RAG_CONFIDENCE_THRESHOLD = 0.15
+
+# MEW upgrade — conversation attachments as chat context: at most this many
+# of the most recent attachments per conversation_id, each truncated to
+# this many chars when injected into the turn context.
+_ATTACHMENT_CONTEXT_MAX = 3
+_ATTACHMENT_CONTEXT_CHARS = 2000
+
 
 LOW_CONFIDENCE_REPLY = (
     "I couldn't find enough information in your documents to answer that reliably."
@@ -204,6 +211,41 @@ class SpideyAgent:
                 safe[key] = value[:500] if isinstance(value, str) and len(value) > 500 else value
             return safe
         return {"value": str(out)[:500]}
+
+    @staticmethod
+    def _get_attachment_block(conversation_id: str | None) -> str:
+        """Most recent attachments for a conversation, as labeled context blocks.
+
+        Format: ``[Attachment: <filename> (<kind>)]`` + the first
+        ~2000 chars of extracted text, newest first, max 3. A DB failure
+        degrades to no attachment context — it never fails the chat turn.
+        """
+        if not conversation_id:
+            return ""
+        try:
+            with get_session() as session:
+                rows = (
+                    session.execute(
+                        select(ConversationAttachment)
+                        .where(
+                            ConversationAttachment.conversation_id
+                            == conversation_id
+                        )
+                        .order_by(ConversationAttachment.created_at.desc())
+                        .limit(_ATTACHMENT_CONTEXT_MAX)
+                    )
+                    .scalars()
+                    .all()
+                )
+                blocks = [
+                    f"[Attachment: {r.filename} ({r.kind})]\n"
+                    f"{(r.extracted_text or '')[:_ATTACHMENT_CONTEXT_CHARS]}"
+                    for r in rows
+                ]
+                return "\n\n".join(blocks)
+        except Exception:
+            logger.exception("attachment context lookup failed")
+            return ""
 
     @staticmethod
     def _user_msg(exc: Exception) -> str:
@@ -595,6 +637,7 @@ class SpideyAgent:
         engine,
         history: list[dict] | None = None,
         lang: str = "auto",
+        conversation_id: str | None = None,
     ) -> str:
         # Conversation continuity: the last 10 turns travel with the message
         # so the provider can resolve pronoun follow-ups ("why would I use
@@ -602,6 +645,9 @@ class SpideyAgent:
         history = (history or [])[-10:]
         # Reply language: detected per message unless the caller forced one.
         lang = detect_language(message, lang)
+        # MEW upgrade: files attached to this conversation (via
+        # POST /api/chat/attach) travel with the turn as labeled context.
+        attachment_block = self._get_attachment_block(conversation_id)
         _step = self._stepper(run, engine)
         tool_results: dict[str, dict] = {}
         classification: dict | None = None
@@ -619,7 +665,8 @@ class SpideyAgent:
                 # Dedicated 9-stage resume pipeline ("Understand request" is
                 # already recorded above as stage 1).
                 return await self._run_resume_steps(
-                    _step, message, intent, run, engine
+                    _step, message, intent, run, engine,
+                    attachments=attachment_block,
                 )
             plan = build_plan(classification)
 
@@ -675,6 +722,7 @@ class SpideyAgent:
                     "plan_step": plan_step,
                     "proposal": proposal,
                     "lang": lang,
+                    "conversation_id": conversation_id,
                     "expires_at": time.time() + CONFIRM_TTL_SECONDS,
                 }
                 async def _proposal_out() -> dict:
@@ -746,7 +794,10 @@ class SpideyAgent:
                         if tn in tool_results
                     ]
 
-            facts = self._compose_facts(intent, message, tool_results, mems, lang)
+            facts = self._compose_facts(
+                intent, message, tool_results, mems, lang,
+                attachments=attachment_block,
+            )
             response = await _step(
                 "Compose response",
                 "respond",
@@ -788,6 +839,9 @@ class SpideyAgent:
         # The reply language was detected when the confirmation was proposed;
         # re-detect defensively for tokens created before lang was stored.
         lang = detect_language(message, pending.get("lang", "auto"))
+        # MEW upgrade: the turn that proposed the confirmation carried the
+        # conversation id, so attachment context survives the confirm round-trip.
+        attachment_block = self._get_attachment_block(pending.get("conversation_id"))
         try:
             mems: list[dict] = []
             if classification.get("requires_memory"):
@@ -811,7 +865,10 @@ class SpideyAgent:
             await _step(
                 "Verify results", "verify", lambda: self._verify(tool_results)
             )
-            facts = self._compose_facts(intent, message, tool_results, mems, lang)
+            facts = self._compose_facts(
+                intent, message, tool_results, mems, lang,
+                attachments=attachment_block,
+            )
             response = await _step(
                 "Compose response",
                 "respond",
@@ -837,6 +894,7 @@ class SpideyAgent:
         history: list[dict] | None = None,
         lang: str = "auto",
         emit=None,
+        conversation_id: str | None = None,
     ) -> str:
         """Streaming twin of :meth:`run`: identical stages (classify -> plan ->
         memory -> tool args -> confirmation gate -> tool exec -> verify ->
@@ -859,6 +917,8 @@ class SpideyAgent:
         history = (history or [])[-10:]
         lang = detect_language(message, lang)
         emit = emit or _noop_emit
+        # MEW upgrade: same attachment context as run().
+        attachment_block = self._get_attachment_block(conversation_id)
         _step = self._stepper(run, engine)
         tool_results: dict[str, dict] = {}
         classification: dict | None = None
@@ -898,7 +958,8 @@ class SpideyAgent:
                     {"state": "thinking", "label": "Running resume pipeline"},
                 )
                 response = await self._run_resume_steps(
-                    _step, message, intent, run, engine
+                    _step, message, intent, run, engine,
+                    attachments=attachment_block,
                 )
                 await emit(
                     "state", {"state": "speaking", "label": "Speaking"}
@@ -959,6 +1020,7 @@ class SpideyAgent:
                     "plan_step": plan_step,
                     "proposal": proposal,
                     "lang": lang,
+                    "conversation_id": conversation_id,
                     "expires_at": time.time() + CONFIRM_TTL_SECONDS,
                 }
 
@@ -1054,7 +1116,10 @@ class SpideyAgent:
                         if tn in tool_results
                     ]
 
-            facts = self._compose_facts(intent, message, tool_results, mems, lang)
+            facts = self._compose_facts(
+                intent, message, tool_results, mems, lang,
+                attachments=attachment_block,
+            )
             await emit("state", {"state": "speaking", "label": "Speaking"})
             response = await _step(
                 "Compose response",
@@ -1104,6 +1169,8 @@ class SpideyAgent:
         classification = pending["classification"]
         intent = classification.get("intent", "chat_fallback")
         lang = detect_language(message, pending.get("lang", "auto"))
+        # MEW upgrade: attachment context survives the confirm round-trip.
+        attachment_block = self._get_attachment_block(pending.get("conversation_id"))
         try:
             mems: list[dict] = []
             if classification.get("requires_memory"):
@@ -1146,7 +1213,10 @@ class SpideyAgent:
             await _step(
                 "Verify results", "verify", lambda: self._verify(tool_results)
             )
-            facts = self._compose_facts(intent, message, tool_results, mems, lang)
+            facts = self._compose_facts(
+                intent, message, tool_results, mems, lang,
+                attachments=attachment_block,
+            )
             await emit("state", {"state": "speaking", "label": "Speaking"})
             response = await _step(
                 "Compose response",
@@ -1183,7 +1253,10 @@ class SpideyAgent:
             await emit("error", {"message": msg})
             return _FALLBACK_REPLY
 
-    async def _run_resume_steps(self, _step, message: str, intent: str, run, engine) -> str:
+    async def _run_resume_steps(
+        self, _step, message: str, intent: str, run, engine,
+        attachments: str = "",
+    ) -> str:
         """Phase 4 resume pipeline — nine visible stages.
 
         Understand request -> Read resume -> Analyze sections ->
@@ -1262,7 +1335,9 @@ class SpideyAgent:
                     "version": version,
                 }
             }
-            facts = self._compose_facts(intent, message, tool_results, mems)
+            facts = self._compose_facts(
+                intent, message, tool_results, mems, attachments=attachments
+            )
             response = await _step(
                 "Compose response",
                 "respond",
@@ -1409,8 +1484,28 @@ class SpideyAgent:
             limit = 10 if intent == "summarize_document" else 5
             return {"action": "search", "query": message, "limit": limit}
         if tool == "resume":
-            # The dedicated resume pipeline builds its own args per stage;
-            # this default keeps the generic loop safe.
+            if intent == "resume_save_version":
+                # "save that version": snapshot the latest version — which is
+                # the improved text after an improve run — as a new
+                # append-only version. The content is copied verbatim from
+                # the stored version; nothing is invented.
+                latest = await self.tools["resume"].execute(action="latest")
+                version = (latest or {}).get("version")
+                if not version:
+                    raise ToolError(NO_CV_REPLY)
+                return {
+                    "action": "create_version",
+                    "content": version["content"],
+                    "label": (
+                        "Saved from chat — snapshot of "
+                        f"v{version['version_number']}"
+                    ),
+                    "source_filename": version.get("source_filename") or "",
+                    "created_from": version["id"],
+                }
+            # resume_show_latest reads the latest version; the dedicated
+            # resume pipeline (resume_analyze/resume_improve) builds its own
+            # args per stage, so this default keeps the generic loop safe.
             return {"action": "latest"}
         return {}
 
@@ -1606,6 +1701,7 @@ class SpideyAgent:
         tool_results: dict[str, dict],
         mems: list[dict],
         lang: str = "en",
+        attachments: str = "",
     ) -> str:
         def pick(en: str, hinglish: str, hi: str) -> str:
             # Response template for the reply language; Hindi input is never
@@ -1811,6 +1907,48 @@ class SpideyAgent:
             return "\n".join(line for line in lines if line)
         if intent in ("knowledge_search", "summarize_document"):
             return SpideyAgent._compose_rag_facts(tool_results)
+        if intent == "document_qa":
+            # MEW upgrade: the conversation's attachments are the primary
+            # context; RAG passages supplement only when the confidence gate
+            # passes. Honest when neither exists.
+            parts: list[str] = []
+            if attachments:
+                parts.append(attachments)
+            rag_facts = SpideyAgent._compose_rag_facts(tool_results)
+            if rag_facts != LOW_CONFIDENCE_REPLY:
+                parts.append(rag_facts)
+            if parts:
+                return "\n\n".join(parts)
+            return pick(
+                "There's nothing attached to this conversation yet — attach "
+                "a file first (POST /api/chat/attach), or upload the "
+                "document to the knowledge base.",
+                "Is conversation mein abhi koi file attach nahi hai — pehle "
+                "koi file attach karo, ya document knowledge base mein "
+                "upload karo.",
+                "इस बातचीत में अभी कोई फ़ाइल अटैच नहीं है — पहले कोई फ़ाइल "
+                "अटैच करें, या दस्तावेज़ नॉलेज बेस में अपलोड करें।",
+            )
+        if intent == "resume_save_version":
+            v = tool_results.get("resume", {}).get("version", {}) or {}
+            num = v.get("version_number")
+            label = v.get("label") or ""
+            return pick(
+                f'Saved, sir — snapshotted as v{num} ("{label}").',
+                f'Save ho gaya — v{num} ("{label}") ke roop mein snapshot le liya.',
+                f'सहेज लिया — v{num} ("{label}") के रूप में स्नैपशॉट ले लिया।',
+            )
+        if intent == "resume_show_latest":
+            v = tool_results.get("resume", {}).get("version")
+            if not v:
+                return NO_CV_REPLY
+            content = (v.get("content") or "").strip()
+            preview = content[:1500]
+            tail = "..." if len(content) > 1500 else ""
+            return (
+                f"Latest version — v{v.get('version_number')} "
+                f"\"{v.get('label')}\":\n\n{preview}{tail}"
+            )
         if intent in ("resume_analyze", "resume_improve"):
             return SpideyAgent._compose_resume_facts(intent, tool_results)
         if intent == "resume_empty":
@@ -1863,7 +2001,6 @@ class SpideyAgent:
             )
         return "\n".join(lines)
 
-    @staticmethod
     def _compose_rag_facts(tool_results: dict[str, dict]) -> str:
         """Facts for RAG intents, with citation + confidence gating.
 

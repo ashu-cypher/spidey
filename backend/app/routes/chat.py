@@ -1,17 +1,23 @@
 import asyncio
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from inspect import Parameter, signature
+from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app.agents.spidey_agent import SpideyAgent
 from app.config import settings
+from app.database import get_session
+from app.models import ConversationAttachment
 from app.providers import get_provider
+from app.rag.pipeline import extract_text, validate_upload
 from app.tools import TOOL_REGISTRY
 from app.tools.base import ToolError
+from app.tools.resume import detect_sections
 from app.workflows.engine import engine
 from app.workflows.persistence import (
     get_persisted_run,
@@ -39,6 +45,10 @@ class ChatRequest(BaseModel):
     # Reply language: "auto" detects per message ('en'|'hi'|'hinglish');
     # any other value forces it ('hindi' normalizes to 'hi').
     lang: str = "auto"
+    # MEW upgrade: chat-client conversation key. Files uploaded via
+    # POST /api/chat/attach under this id become context for the turn's
+    # attachments ("explain this" resolves against them, no re-upload).
+    conversation_id: str | None = None
 
 
 class MemoryCreateRequest(BaseModel):
@@ -90,11 +100,18 @@ async def post_chat(req: ChatRequest):
         asyncio.create_task(_execute_pending(run.workflow_id, pending, history))
         return {"run_id": run.workflow_id}
     run = engine.create_run(req.message)
-    asyncio.create_task(_execute(run.workflow_id, req.message, history, req.lang))
+    asyncio.create_task(
+        _execute(
+            run.workflow_id, req.message, history, req.lang,
+            conversation_id=req.conversation_id,
+        )
+    )
     return {"run_id": run.workflow_id}
 
 
-async def _stream_events(run, message, history, lang, confirmed_pending=None):
+async def _stream_events(
+    run, message, history, lang, confirmed_pending=None, conversation_id=None
+):
     """Bridge agent.run_stream emit() calls to SSE frames.
 
     Event contract: ``event: <type>\\ndata: <json>\\n\\n`` with types
@@ -114,7 +131,8 @@ async def _stream_events(run, message, history, lang, confirmed_pending=None):
                 )
             else:
                 await agent.run_stream(
-                    message, run, engine, history=history, lang=lang, emit=emit
+                    message, run, engine, history=history, lang=lang, emit=emit,
+                    conversation_id=conversation_id,
                 )
         finally:
             await queue.put((None, None))  # sentinel: stream is over
@@ -160,13 +178,106 @@ async def post_chat_stream(req: ChatRequest):
         )
     run = engine.create_run(req.message)
     return StreamingResponse(
-        _stream_events(run, req.message, history, req.lang),
+        _stream_events(
+            run, req.message, history, req.lang,
+            conversation_id=req.conversation_id,
+        ),
         media_type="text/event-stream",
     )
 
 
+# --- Conversation attachments (MEW upgrade) -----------------------------------
+
+# Text is extracted with the same pipeline the resume tool uses
+# (app.rag.pipeline: validate_upload + extract_text) — no duplicated parsers.
+_ATTACH_TEXT_LIMIT = 8000  # extracted_text is bounded at write time
+_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+
+# A file counts as a resume when its name says so, or when the resume tool's
+# own section detector finds at least two real CV sections in the extracted
+# text. This is a heuristic, and it is labeled as one.
+_RESUME_NAME_HINT = re.compile(r"\b(resume|cv|curriculum\s*vitae)\b", re.IGNORECASE)
+_RESUME_CORE_SECTIONS = {"summary", "education", "experience", "projects", "skills"}
+
+
+def _classify_attachment_kind(filename: str, text: str) -> str:
+    """'resume' | 'document'. Reuses the resume tool's section detection."""
+    if _RESUME_NAME_HINT.search(filename or ""):
+        return "resume"
+    sections = detect_sections(text or "")
+    hits = sum(1 for s in _RESUME_CORE_SECTIONS if sections.get(s))
+    if hits >= 2:
+        return "resume"
+    return "document"
+
+
+@router.post("/api/chat/attach")
+async def attach_file(
+    file: UploadFile = File(...),
+    conversation_id: str = Form(...),
+    message: str | None = Form(None),
+):
+    """Attach a file to a conversation as chat context.
+
+    Multipart form: ``file`` (UploadFile), ``conversation_id`` (str),
+    optional ``message`` (str — accepted for future use, not stored).
+    Text is extracted with the RAG pipeline's extractors (.pdf/.docx/.txt/
+    .md, 10 MB cap) and bounded to ~8k chars at write time. Images are
+    accepted but only the filename is stored: this backend has no vision
+    model, so the image content is never read.
+
+    Returns ``{id, conversation_id, filename, kind, created_at}`` where
+    kind is 'document' | 'resume' | 'image'.
+    """
+    filename = Path(file.filename or "upload").name
+    data = await file.read()
+    if not data:
+        raise HTTPException(422, "The uploaded file is empty.")
+    ext = Path(filename).suffix.lower()
+    if ext in _IMAGE_EXTENSIONS:
+        kind = "image"
+        # Honest: no vision model — the image bytes are never read.
+        text = (
+            f"[Image attachment: {filename}. This backend has no vision "
+            f"model, so only the filename was stored — the image content "
+            f"was not read.]"
+        )
+    else:
+        try:
+            ext = validate_upload(filename, data)
+        except ToolError as exc:
+            raise HTTPException(422, exc.user_message)
+        try:
+            text = extract_text(ext, data, filename)
+        except ToolError as exc:
+            raise HTTPException(422, exc.user_message)
+        kind = _classify_attachment_kind(filename, text)
+    with get_session() as session:
+        row = ConversationAttachment(
+            conversation_id=conversation_id,
+            filename=filename,
+            kind=kind,
+            extracted_text=text[:_ATTACH_TEXT_LIMIT],
+        )
+        session.add(row)
+        session.flush()
+        row_id, row_kind = row.id, row.kind
+        created_at = row.created_at
+    return {
+        "id": row_id,
+        "conversation_id": conversation_id,
+        "filename": filename,
+        "kind": row_kind,
+        "created_at": created_at.isoformat() if created_at else None,
+    }
+
+
 async def _execute(
-    run_id: str, message: str, history: list[dict] | None = None, lang: str = "auto"
+    run_id: str,
+    message: str,
+    history: list[dict] | None = None,
+    lang: str = "auto",
+    conversation_id: str | None = None,
 ):
     run = engine.get_run(run_id)
     try:
@@ -176,14 +287,18 @@ async def _execute(
             takes_lang = "lang" in params or any(
                 p.kind == Parameter.VAR_KEYWORD for p in params.values()
             )
+            takes_conversation_id = "conversation_id" in params or any(
+                p.kind == Parameter.VAR_KEYWORD for p in params.values()
+            )
         except (TypeError, ValueError):
             takes_lang = False
+            takes_conversation_id = False
+        kwargs: dict = {"history": history}
         if takes_lang:
-            response = await agent.run(
-                message, run, engine, history=history, lang=lang
-            )
-        else:
-            response = await agent.run(message, run, engine, history=history)
+            kwargs["lang"] = lang
+        if takes_conversation_id:
+            kwargs["conversation_id"] = conversation_id
+        response = await agent.run(message, run, engine, **kwargs)
         # Agent normally finishes the run itself; this is a safety net.
         if engine.get_run(run_id).status == "running":
             engine.finish_run(run_id, "completed", result=response)

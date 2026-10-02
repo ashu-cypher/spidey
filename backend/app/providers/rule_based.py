@@ -148,6 +148,48 @@ _RESUME_ANALYZE = re.compile(
     re.IGNORECASE,
 )
 
+# MEW upgrade — attachment/resume-as-context intents. "analyze this" /
+# "explain this" / "summarize this" resolve against the conversation's
+# attached files (document_qa); resume-targeted phrasing without the word
+# "resume" routes to the existing resume tool. Checked right after the
+# explicit resume patterns (so "analyze my resume" still wins) and before
+# the generic intents below. The negative lookahead keeps "explain this
+# code" and "summarize this document" on their existing intents.
+_DOCUMENT_QA = re.compile(
+    r"\b(analy[sz]e|explain|summari[sz]e)\s+(this|that|it)\b"
+    r"(?!\s+(code|document|file)\b)"
+    r"|\bwhat\s+is\s+the\s+most\s+important\s+part\b",
+    re.IGNORECASE,
+)
+# Section-targeted resume phrasing, no "resume"/"cv" word needed. Kept
+# narrow (section nouns, ATS, shorter) so a generic "improve this" stays
+# document_qa and never wanders into the resume pipeline.
+_RESUME_SECTION = re.compile(
+    r"\b(improve|fix|rewrite|strengthen|polish)\b.{0,30}"
+    r"\b(projects?|experience|education|skills?|summary|objective)\b.{0,15}"
+    r"\bsections?\b"
+    r"|\b(improve|fix|rewrite|strengthen|polish)\b.{0,20}"
+    r"\b(first|second|third|1st|2nd|3rd)\s+section\b"
+    r"|\bmake\s+it\s+(ats[-\s]?friendly|shorter|more\s+professional)\b"
+    r"|\bats[-\s]?friendly\b",
+    re.IGNORECASE,
+)
+# Hindi/Hinglish resume phrasing: "isko better bana do" / "is section ko
+# professional bana do". Placed before _TASK_CREATE_HI (which looks for
+# banao/add near kaam/task) so these never misfire into task creation.
+_RESUME_SECTION_HI = re.compile(
+    r"\bisko\s+better\s+bana\s+do\b"
+    r"|\bis\s+section\s+ko\s+professional\s+bana\s+do\b",
+    re.IGNORECASE,
+)
+_RESUME_SAVE_VERSION = re.compile(
+    r"\bsave\s+(that|this)\s+version\b", re.IGNORECASE
+)
+_RESUME_SHOW_LATEST = re.compile(
+    r"\bshow\s+me\s+the\s+(final|latest)\s+version\b"
+    r"|\bwhat'?s\s+the\s+(final|latest)\s+version\b",
+    re.IGNORECASE,
+)
 # Conversation continuity — pronoun follow-ups ("why would I use it?",
 # "tell me more about it") and recall of the current conversation ("what
 # did we discuss earlier?"). Both need the request's conversation history.
@@ -235,6 +277,39 @@ class RuleBasedProvider(AIProvider):
                 "requires_tools": True,
                 "tools": ["resume"],
                 "response_mode": "grounded",
+            }
+        # MEW upgrade — attachment / resume-as-context / prompt intents.
+        if _DOCUMENT_QA.search(text):
+            return {
+                "intent": "document_qa",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["rag"],
+                "response_mode": "grounded",
+            }
+        if _RESUME_SECTION.search(text) or _RESUME_SECTION_HI.search(text):
+            return {
+                "intent": "resume_improve",
+                "requires_memory": True,
+                "requires_tools": True,
+                "tools": ["resume"],
+                "response_mode": "grounded",
+            }
+        if _RESUME_SAVE_VERSION.search(text):
+            return {
+                "intent": "resume_save_version",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["resume"],
+                "response_mode": "confirm",
+            }
+        if _RESUME_SHOW_LATEST.search(text):
+            return {
+                "intent": "resume_show_latest",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["resume"],
+                "response_mode": "answer",
             }
         if _SUMMARIZE_DOC.search(text):
             return {
