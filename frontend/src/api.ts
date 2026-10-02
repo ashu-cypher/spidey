@@ -97,6 +97,8 @@ export type StreamEventType =
 export interface StreamChatOptions {
   signal?: AbortSignal;
   confirmToken?: string;
+  /** Stable conversation id; the backend keys attachment context on it. */
+  conversationId?: string;
   onEvent?: (type: StreamEventType, data: Record<string, unknown>) => void;
 }
 
@@ -137,6 +139,7 @@ export async function streamChat(
       history,
       lang,
       confirm_token: options.confirmToken ?? null,
+      conversation_id: options.conversationId ?? null,
     }),
     signal: options.signal,
   });
@@ -602,6 +605,34 @@ export async function compareResumeVersions(
 
 export function resumeDownloadUrl(id: string, format: 'txt' | 'md'): string {
   return `/api/resume/versions/${encodeURIComponent(id)}/download?format=${format}`;
+}
+
+// --- Chat attachments (MEW upgrade) -----------------------------------------
+
+export interface Attachment {
+  id: string;
+  conversation_id: string;
+  filename: string;
+  kind: string;
+  created_at: string | null;
+}
+
+/**
+ * POST /api/chat/attach — multipart (file, conversation_id, optional
+ * message). The backend worker is adding this endpoint in parallel; until it
+ * lands this will 404 and callers must surface a user-safe error.
+ */
+export async function uploadAttachment(
+  file: File,
+  conversationId: string,
+  message?: string,
+): Promise<Attachment> {
+  const form = new FormData();
+  form.append('file', file, file.name);
+  form.append('conversation_id', conversationId);
+  if (message) form.append('message', message);
+  const res = await fetch('/api/chat/attach', { method: 'POST', body: form });
+  return json(res);
 }
 
 // --- System telemetry (MEW mission) ---------------------------------

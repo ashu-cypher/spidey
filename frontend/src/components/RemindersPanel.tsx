@@ -1,17 +1,16 @@
 import { useEffect, useState } from 'react';
 import {
-  createReminder,
   deleteReminder,
   getReminders,
   setReminderDone,
 } from '../api';
 import type { ReminderItem } from '../api';
-import { HudButton, HudEmpty, HudError, HudInput, HudPanel } from './hud';
+import { HudEmpty, HudError, HudPanel } from './hud';
 
+// Agent-managed list: the agent acts via conversation ("remind me…").
+// This panel is for review — toggle done or delete. No input forms here.
 export function RemindersPanel() {
   const [reminders, setReminders] = useState<ReminderItem[]>([]);
-  const [title, setTitle] = useState('');
-  const [when, setWhen] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   async function refresh() {
@@ -38,20 +37,6 @@ export function RemindersPanel() {
     };
   }, []);
 
-  async function add(e: React.FormEvent) {
-    e.preventDefault();
-    const t = title.trim();
-    if (!t) return;
-    try {
-      await createReminder(t, when || null);
-      setTitle('');
-      setWhen('');
-      await refresh();
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to create reminder');
-    }
-  }
-
   async function toggle(r: ReminderItem) {
     try {
       await setReminderDone(r.id, !r.done);
@@ -72,24 +57,11 @@ export function RemindersPanel() {
 
   return (
     <div className="space-y-4">
-      <HudPanel title="Schedule reminder">
-        <form onSubmit={add} className="flex flex-wrap gap-2">
-          <HudInput
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder="Remind me to…"
-            className="min-w-[180px] flex-1"
-          />
-          <HudInput
-            type="datetime-local"
-            value={when}
-            onChange={(e) => setWhen(e.target.value)}
-            title="Remind at"
-          />
-          <HudButton type="submit" variant="primary" disabled={!title.trim()}>
-            Arm
-          </HudButton>
-        </form>
+      <HudPanel title="Reminders">
+        <p className="text-xs text-cyan-200/40">
+          Managed by MEW — say “remind me to call mom tomorrow” in the
+          conversation.
+        </p>
       </HudPanel>
 
       {error && <HudError message={error} />}

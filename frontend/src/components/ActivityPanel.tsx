@@ -39,7 +39,7 @@ export function ActivityPanel({ refreshKey }: Props) {
 
   if (error) return <HudError message={error} />;
   if (runs.length === 0)
-    return <HudEmpty>No activity yet — send Spidey a message first.</HudEmpty>;
+    return <HudEmpty>No activity yet — send MEW a message first.</HudEmpty>;
 
   return (
     <div className="relative">

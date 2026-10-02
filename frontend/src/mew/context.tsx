@@ -33,6 +33,17 @@ export interface ChatInputApi {
   focus: () => void;
 }
 
+/** A dismissible system notice (reminders, protocol events, briefing). */
+export interface Notice {
+  id: number;
+  text: string;
+}
+
+/** API the universal input registers so chips can open the file picker. */
+export interface AttachApi {
+  open: () => void;
+}
+
 export interface SendChatOpts {
   /** True when the message came from the voice transcript (drives 'thinking'). */
   voice?: boolean;
@@ -97,7 +108,7 @@ interface MewContextValue {
   /** Bumped whenever a chat workflow completes (refreshes activity log). */
   activityTick: number;
   bumpActivity: () => void;
-  /** App-level tab navigation (command/workflows/system/security/knowledge/tasks/voice). */
+  /** App-level tab navigation (mew/activity/library/tasks/settings). */
   activeTab: string;
   setActiveTab: (tab: string) => void;
   /** Prefill the chat input (does not send). */
@@ -133,10 +144,17 @@ interface MewContextValue {
   /** Chat UI registers its in-flight stream aborter; barge-in calls abortStream. */
   registerStreamAbort: (fn: (() => void) | null) => void;
   abortStream: () => void;
-  /** "Talk to Spidey" continuous conversation mode. */
+  /** "Talk to MEW" continuous conversation mode. */
   conversationMode: boolean;
   startConversation: () => void;
   endConversation: () => void;
+  /** Dismissible system notices (reminders, protocols, briefing). */
+  notices: Notice[];
+  pushNotice: (text: string) => void;
+  dismissNotice: (id: number) => void;
+  /** Universal input's attach picker, for quick-action chips. */
+  registerAttachApi: (api: AttachApi | null) => void;
+  openAttachPicker: () => void;
 }
 
 const MewContext = createContext<MewContextValue | null>(null);
@@ -152,6 +170,8 @@ let lineId = 0;
 let briefingFired = false;
 /** Module-level id counter for stream activity items. */
 let activityId = 0;
+/** Module-level id counter for notices. */
+let noticeId = 0;
 
 function readStoredVoiceLang(): VoiceLangSetting {
   try {
@@ -195,9 +215,10 @@ export function MewProvider({ children }: { children: ReactNode }) {
   const [speaking, setSpeakingState] = useState(false);
   const [engineState, setEngineState] = useState<VoiceState>('idle');
   const [voiceError, setVoiceError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<string>('command');
+  const [activeTab, setActiveTab] = useState<string>('mew');
   const [activeSteps, setActiveSteps] = useState<WorkflowStep[]>([]);
   const [lastRun, setLastRun] = useState<WorkflowRun | null>(null);
+  const [notices, setNotices] = useState<Notice[]>([]);
   const [history, setHistory] = useState<ChatHistoryTurn[]>([]);
   const [voiceLang, setVoiceLangState] = useState<VoiceLangSetting>(() => readStoredVoiceLang());
   const [volume, setVolumeState] = useState<number>(() => readStoredVolume());
@@ -210,6 +231,7 @@ export function MewProvider({ children }: { children: ReactNode }) {
   const baseModeRef = useRef<ReactorMode>('idle');
   const chatSendRef = useRef<((text: string, opts?: SendChatOpts) => void) | null>(null);
   const chatInputApiRef = useRef<ChatInputApi | null>(null);
+  const attachApiRef = useRef<AttachApi | null>(null);
   const voiceSendRef = useRef(false);
   const streamAbortRef = useRef<(() => void) | null>(null);
   const conversationModeRef = useRef(false);
@@ -295,6 +317,24 @@ export function MewProvider({ children }: { children: ReactNode }) {
 
   const focusChatInput = useCallback(() => {
     chatInputApiRef.current?.focus();
+  }, []);
+
+  const pushNotice = useCallback((text: string) => {
+    const t = text.trim();
+    if (!t) return;
+    setNotices((prev) => [...prev.slice(-4), { id: noticeId++, text: t }]);
+  }, []);
+
+  const dismissNotice = useCallback((id: number) => {
+    setNotices((prev) => prev.filter((n) => n.id !== id));
+  }, []);
+
+  const registerAttachApi = useCallback((api: AttachApi | null) => {
+    attachApiRef.current = api;
+  }, []);
+
+  const openAttachPicker = useCallback(() => {
+    attachApiRef.current?.open();
   }, []);
 
   const appendHistory = useCallback(
@@ -488,7 +528,7 @@ export function MewProvider({ children }: { children: ReactNode }) {
   }, []);
 
   /**
-   * "Talk to Spidey" continuous mode: mic stays open and the loop runs
+   * "Talk to MEW" continuous mode: mic stays open and the loop runs
    * LISTENING → (final transcript) → PROCESSING (stream) → SPEAKING (TTS) →
    * LISTENING automatically. Recognition's own end-of-speech ends each turn;
    * barge-in aborts the stream mid-response.
@@ -508,7 +548,7 @@ export function MewProvider({ children }: { children: ReactNode }) {
     conversationModeRef.current = true;
     setConversationMode(true);
     playSfx('activation');
-    logTranscript('system', 'Conversation mode on — talk to Spidey, sir.');
+    logTranscript('system', 'Conversation mode on — talk to MEW, sir.');
   }, [voice, voiceSupported, logTranscript]);
 
   /**
@@ -550,9 +590,13 @@ export function MewProvider({ children }: { children: ReactNode }) {
       }
       const due = b.due_soon[0];
       if (due) parts.push(`Sir, you have a reminder due soon: ${due.text}.`);
-      if (parts.length > 0) logTranscript('mew', parts.join(' '));
+      if (parts.length > 0) {
+        const text = parts.join(' ');
+        logTranscript('mew', text);
+        pushNotice(text);
+      }
     })();
-  }, [logTranscript]);
+  }, [logTranscript, pushNotice]);
 
   useEffect(
     () => () => {
@@ -618,6 +662,11 @@ export function MewProvider({ children }: { children: ReactNode }) {
       conversationMode,
       startConversation,
       endConversation,
+      notices,
+      pushNotice,
+      dismissNotice,
+      registerAttachApi,
+      openAttachPicker,
     }),
     [
       voice,
@@ -670,6 +719,11 @@ export function MewProvider({ children }: { children: ReactNode }) {
       conversationMode,
       startConversation,
       endConversation,
+      notices,
+      pushNotice,
+      dismissNotice,
+      registerAttachApi,
+      openAttachPicker,
     ],
   );
 

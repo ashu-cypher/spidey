@@ -6,9 +6,9 @@ import { runContextOf } from '../mew/steps';
 // ---------------------------------------------------------------------------
 // Contextual quick actions under the chat input. Every chip does something
 // real: prefill chips put text in the input (user completes + sends),
-// send chips dispatch a real chat message, and Upload navigates to the
-// Knowledge tab. Context is derived from the last completed run's REAL
-// tool steps — never invented.
+// send chips dispatch a real chat message, and Attach opens the file picker.
+// Context is derived from the last completed run's REAL tool steps — never
+// invented.
 // ---------------------------------------------------------------------------
 
 interface Chip {
@@ -32,7 +32,7 @@ export function QuickActions() {
     sendChat,
     prefillChat,
     focusChatInput,
-    setActiveTab,
+    openAttachPicker,
   } = useMew();
 
   const context = useMemo(
@@ -45,17 +45,17 @@ export function QuickActions() {
       return [
         {
           label: 'Summarize my document',
-          title: 'Ask Spidey to summarize the document from the last run',
+          title: 'Ask MEW to summarize the document from the last run',
           run: () => sendChat('Summarize my document'),
         },
         {
           label: 'Find key points',
-          title: 'Ask Spidey for the key points of the document',
+          title: 'Ask MEW for the key points of the document',
           run: () => sendChat('What are the key points in my document?'),
         },
         {
           label: 'Quiz me',
-          title: 'Have Spidey ask you questions about the document',
+          title: 'Have MEW ask you questions about the document',
           run: () => sendChat('Ask me questions about my document'),
         },
       ];
@@ -84,12 +84,12 @@ export function QuickActions() {
         },
       })),
       {
-        label: 'Upload Document',
-        title: 'Open the Knowledge tab to upload a document',
-        run: () => setActiveTab('knowledge'),
+        label: 'Attach a file',
+        title: 'Attach a file so MEW can work with it',
+        run: () => openAttachPicker(),
       },
     ];
-  }, [context, sendChat, prefillChat, focusChatInput, setActiveTab]);
+  }, [context, sendChat, prefillChat, focusChatInput, openAttachPicker]);
 
   return (
     <div className="mt-3 border-t border-accent/10 pt-3">

@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
-import { createTask, deleteTask, getTasks, setTaskDone } from '../api';
+import { deleteTask, getTasks, setTaskDone } from '../api';
 import type { TaskItem } from '../api';
-import { HudButton, HudEmpty, HudError, HudInput, HudPanel } from './hud';
+import { HudEmpty, HudError, HudPanel } from './hud';
 
+// Agent-managed list: the agent acts via conversation ("add a task…").
+// This panel is for review — toggle done or delete. No input forms here.
 export function TasksPanel() {
   const [tasks, setTasks] = useState<TaskItem[]>([]);
-  const [title, setTitle] = useState('');
-  const [due, setDue] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   async function refresh() {
@@ -33,20 +33,6 @@ export function TasksPanel() {
     };
   }, []);
 
-  async function add(e: React.FormEvent) {
-    e.preventDefault();
-    const t = title.trim();
-    if (!t) return;
-    try {
-      await createTask(t, due || null);
-      setTitle('');
-      setDue('');
-      await refresh();
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to create task');
-    }
-  }
-
   async function toggle(t: TaskItem) {
     try {
       await setTaskDone(t.id, !t.done);
@@ -67,30 +53,16 @@ export function TasksPanel() {
 
   return (
     <div className="space-y-4">
-      <HudPanel title="New objective">
-        <form onSubmit={add} className="flex flex-wrap gap-2">
-          <HudInput
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder="New task…"
-            className="min-w-[180px] flex-1"
-          />
-          <HudInput
-            type="date"
-            value={due}
-            onChange={(e) => setDue(e.target.value)}
-            title="Due date"
-          />
-          <HudButton type="submit" variant="primary" disabled={!title.trim()}>
-            Deploy
-          </HudButton>
-        </form>
+      <HudPanel title="Tasks">
+        <p className="text-xs text-cyan-200/40">
+          Managed by MEW — say “add a task to buy milk” in the conversation.
+        </p>
       </HudPanel>
 
       {error && <HudError message={error} />}
 
       {tasks.length === 0 ? (
-        <HudEmpty>No tasks yet — ask Spidey to track something for you.</HudEmpty>
+        <HudEmpty>No tasks yet — ask MEW to track something for you.</HudEmpty>
       ) : (
         <ul className="space-y-2">
           {tasks.map((t) => (

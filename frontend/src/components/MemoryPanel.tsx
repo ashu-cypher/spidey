@@ -57,7 +57,7 @@ export function MemoryPanel() {
           <HudInput
             value={newContent}
             onChange={(e) => setNewContent(e.target.value)}
-            placeholder="Tell Spidey to remember something…"
+            placeholder="Tell MEW to remember something…"
             className="flex-1"
           />
           <HudButton type="submit" variant="primary" disabled={saving || !newContent.trim()}>
@@ -69,7 +69,7 @@ export function MemoryPanel() {
       {error && <HudError message={error} />}
 
       {memories.length === 0 && !error ? (
-        <HudEmpty>No memories yet — tell Spidey to remember something.</HudEmpty>
+        <HudEmpty>No memories yet — tell MEW to remember something.</HudEmpty>
       ) : (
         <ul className="grid gap-3 md:grid-cols-2">
           {memories.map((m) => (
