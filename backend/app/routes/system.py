@@ -219,14 +219,27 @@ async def set_provider_info(req: ProviderUpdate):
 
 
 @router.post("/api/system/telegram/test")
-async def test_telegram():
+async def test_telegram(body: dict | None = None):
     """Test the Telegram bot connection (getMe).
 
     Returns the honest result: connected, not configured, or the real
     error. Never claims success unless Telegram's API confirms it.
+    Accepts optional {"bot_token": ..., "chat_id": ...} to test
+    not-yet-saved form values; otherwise tests the stored config.
     """
-    from app.services.telegram import test_connection
+    from app.services.telegram import test_connection, validate_token
 
+    body = body or {}
+    bot_token = (body.get("bot_token") or "").strip()
+    if bot_token:
+        # Testing form values: validate token, and check chat ID provided.
+        ok, message = await validate_token(bot_token)
+        if not ok:
+            return {"ok": False, "message": message}
+        chat_id = (body.get("chat_id") or "").strip()
+        if not chat_id:
+            return {"ok": False, "message": "Token works, but chat ID is empty."}
+        return {"ok": True, "message": message + " Ready to save."}
     ok, message = await test_connection()
     return {"ok": ok, "message": message}
 

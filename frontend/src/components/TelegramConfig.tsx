@@ -52,7 +52,13 @@ export function TelegramConfig() {
     setBusy(true);
     setMsg('');
     try {
-      const r = await api('/api/system/telegram/test', { method: 'POST' });
+      // Test the form values if provided, else the stored config.
+      const r = await api('/api/system/telegram/test', {
+        method: 'POST',
+        body: JSON.stringify(
+          botToken ? { bot_token: botToken, chat_id: chatId } : {}
+        ),
+      });
       setMsg(r.message || (r.ok ? 'Connected.' : 'Failed.'));
     } catch {
       setMsg('Could not reach the backend.');
