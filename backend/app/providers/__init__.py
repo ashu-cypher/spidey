@@ -14,13 +14,10 @@ __all__ = [
 
 
 def get_provider(settings=None) -> AIProvider:
-    if settings is None:
-        from app.config import settings as _settings
+    # MEW capability upgrade: a runtime-persisted selection (PUT
+    # /api/system/provider -> backend/.provider.json) wins over the env var.
+    # No file -> the SPIDEY_PROVIDER default, exactly as before.
+    from app.providers.manager import build_provider, get_selection
 
-        settings = _settings
-    name = settings.spidey_provider.strip().lower()
-    if name == "openai":
-        return OpenAIProvider(settings.openai_api_key)
-    if name == "ollama":
-        return OllamaProvider(settings.ollama_base_url)
-    return RuleBasedProvider()
+    selection = get_selection()
+    return build_provider(selection["provider"], selection.get("model"))

@@ -216,6 +216,28 @@ def _bullets(lines: list[str]) -> list[str]:
     return out
 
 
+def _project_entries(lines: list[str]) -> list[dict]:
+    """Group a projects section into entries: {title, bullets}.
+
+    A non-bullet line starts a new project entry (the project name); bullet
+    lines attach to the current entry. "Rewrite the second project" targets
+    entries[1] — the second PROJECT, not the second bullet.
+    """
+    entries: list[dict] = []
+    current: dict | None = None
+    for line in lines:
+        m = _BULLET_RE.match(line)
+        if m:
+            if current is None:
+                current = {"title": "", "bullets": []}
+                entries.append(current)
+            current["bullets"].append(m.group(1).strip())
+        elif line.strip():
+            current = {"title": line.strip(), "bullets": []}
+            entries.append(current)
+    return entries
+
+
 # ---------------------------------------------------------------------------
 # Contact extraction
 # ---------------------------------------------------------------------------
@@ -443,6 +465,51 @@ def _analyze_text(text: str) -> dict:
     if exp_bullets and not any(_NUMBER_RE.search(b) for b in exp_bullets):
         missing_info.append("no measurable achievements in experience")
 
+    # Strengths — real, positive observations from the CV text (never
+    # invented: every claim below is computed from the parsed content).
+    strengths: list[str] = []
+    core_found = [s for s in _CORE_SECTIONS if s in section_names]
+    if len(core_found) == len(_CORE_SECTIONS):
+        strengths.append(
+            "All core sections present "
+            f"({', '.join(core_found)})."
+        )
+    elif len(core_found) >= 2:
+        strengths.append(
+            f"Core sections present: {', '.join(core_found)}."
+        )
+    if contact.get("email") and contact.get("phone"):
+        strengths.append("Contact block complete — email and phone present.")
+    elif contact.get("email"):
+        strengths.append("Contact email present.")
+    detected_skills = extract_skills(text)
+    if detected_skills:
+        strengths.append(
+            f"{len(detected_skills)} distinct skills detected across the CV."
+        )
+    measurable = sum(1 for b in exp_bullets if _NUMBER_RE.search(b))
+    if exp_bullets and measurable:
+        strengths.append(
+            f"{measurable}/{len(exp_bullets)} experience bullets include "
+            "measurable outcomes (numbers, %, $)."
+        )
+    if proj_bullets:
+        strengths.append(
+            f"{len(proj_bullets)} project bullet(s) — projects show applied skill."
+        )
+    if quality_score >= 70:
+        strengths.append(f"Overall quality score {quality_score}/100.")
+
+    # Skill gaps — skills CLAIMED in the skills section but never EVIDENCED
+    # in experience/project bullets. Real and checkable: both sets come from
+    # the CV text via extract_skills.
+    skills_section_text = "\n".join(sections.get("skills", []))
+    claimed = extract_skills(skills_section_text)
+    evidenced: set[str] = set()
+    for b in work_bullets:
+        evidenced |= extract_skills(b)
+    unevidenced = sorted(claimed - evidenced)
+
     return {
         "content": {
             "sections_found": section_names,
@@ -453,6 +520,12 @@ def _analyze_text(text: str) -> dict:
         "issues": issues,
         "issue_counts": counts,
         "quality_score": quality_score,
+        "strengths": strengths,
+        "skill_gaps": {
+            "claimed_in_skills_section": sorted(claimed),
+            "evidenced_in_experience_or_projects": sorted(evidenced),
+            "claimed_but_unevidenced": unevidenced,
+        },
         "ats": {
             "sections_ok": sections_ok,
             "contact_ok": contact_ok,
@@ -849,9 +922,49 @@ class ResumeTool(BaseTool):
     async def _improve(self, kwargs: dict, user_id: str) -> dict:
         version = self._get_version(kwargs.get("version_id"), user_id)
         sections = detect_sections(version.content)
-        bullets = _bullets(sections.get("experience", [])) + _bullets(
-            sections.get("projects", [])
-        )
+        target_section = (kwargs.get("section") or "").strip().lower() or None
+        target_index = kwargs.get("index")
+        target_entry = kwargs.get("entry")
+        if target_section is not None:
+            # Targeted rewrite, e.g. "rewrite the second project".
+            if target_section not in sections or not sections[target_section]:
+                raise ToolError(
+                    f"Your CV has no {target_section} section to rewrite."
+                )
+            if target_section == "projects" and isinstance(target_entry, int):
+                # The Nth PROJECT (entry), not the Nth bullet.
+                entries = _project_entries(sections["projects"])
+                if not 0 <= target_entry < len(entries):
+                    raise ToolError(
+                        f"Your projects section has {len(entries)} "
+                        f"project(s) — there is no #{target_entry + 1}."
+                    )
+                bullets = entries[target_entry]["bullets"]
+                title = entries[target_entry]["title"]
+                label = (
+                    f"project #{target_entry + 1}"
+                    + (f" ({title[:40]})" if title else "")
+                )
+            else:
+                bullets = _bullets(sections[target_section])
+                if isinstance(target_index, int):
+                    if not 0 <= target_index < len(bullets):
+                        raise ToolError(
+                            f"Your {target_section} section has "
+                            f"{len(bullets)} bullet(s) — there is no "
+                            f"#{target_index + 1}."
+                        )
+                    bullets = [bullets[target_index]]
+                label = (
+                    f"{target_section} #{target_index + 1}"
+                    if isinstance(target_index, int)
+                    else target_section
+                )
+        else:
+            bullets = _bullets(sections.get("experience", [])) + _bullets(
+                sections.get("projects", [])
+            )
+            label = None
         suggestions: list[dict] = []
         for bullet in bullets:
             improved, reason = rewrite_bullet(bullet)
@@ -872,6 +985,20 @@ class ResumeTool(BaseTool):
             )
             if len(suggestions) >= 8:
                 break
+
+        if not suggestions:
+            # Honest: the bullet already reads well — no safe rewrite exists,
+            # so no new version is created and nothing is invented.
+            where = f" ({label})" if label else ""
+            return {
+                "suggestions": [],
+                "new_version_id": None,
+                "new_version_number": None,
+                "note": (
+                    f"I couldn't find a safe rewrite for that bullet{where} — "
+                    "it already reads well, so I left your CV unchanged."
+                ),
+            }
 
         new_text = version.content
         for s in suggestions:

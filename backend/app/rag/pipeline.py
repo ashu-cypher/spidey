@@ -71,6 +71,9 @@ def extract_text(ext: str, data: bytes, filename: str) -> str:
 
 
 def _clean(text: str) -> str:
+    # Security: strip control characters (except whitespace) so hostile or
+    # malformed document bytes can never reach a prompt or TTS verbatim.
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()

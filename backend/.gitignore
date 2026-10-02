@@ -1,0 +1,3 @@
+# MEW runtime AI-provider selection (PUT /api/system/provider) — server-side
+# state, never commit. Secrets stay in .env (also never committed).
+.provider.json

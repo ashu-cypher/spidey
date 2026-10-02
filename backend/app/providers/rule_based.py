@@ -150,7 +150,8 @@ _RESUME_IMPROVE = re.compile(
 _RESUME_ANALYZE = re.compile(
     r"\b(analy[sz]e|analysis|check|review|audit|critique|feedback\s+on|look\s+at)\b"
     r".{0,40}\b(my\s+)?(resume|cv)\b"
-    r"|\b(my\s+)?(resume|cv)\s+(analysis|review|feedback)\b",
+    r"|\b(my\s+)?(resume|cv)\s+(analysis|review|feedback)\b"
+    r"|\bwrong\s+with\b.{0,20}\b(my\s+)?(resume|cv)\b",
     re.IGNORECASE,
 )
 
@@ -208,6 +209,52 @@ _GENERATE_PROMPT = re.compile(
     r"|\bprompt\s+bana\s+do\b",
     re.IGNORECASE,
 )
+
+# MEW capability upgrade — section-targeted resume follow-ups, no
+# "resume"/"cv" word needed. "What's wrong with my projects section?" is
+# analysis; "rewrite the second project" is a targeted improve.
+_RESUME_SECTION_Q = re.compile(
+    r"\b(what'?s|what\s+is)\s+(wrong|missing)\s+with\b.{0,40}"
+    r"\b(projects?|experience|education|skills?|summary|objective)\b"
+    r"|\b(review|critique|assess)\b.{0,25}\bmy\b.{0,25}"
+    r"\b(projects?|experience|education|skills?|summary|objective)\b"
+    r"(?!\s+(code|document|file)\b)",
+    re.IGNORECASE,
+)
+_RESUME_ORDINAL_RE = re.compile(
+    r"\b(improve|rewrite|fix|polish|strengthen)\b.{0,25}"
+    r"\bthe\s+(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th)\s+"
+    r"(project|section|bullet)\b",
+    re.IGNORECASE,
+)
+_SECTION_NOUN_RE = re.compile(
+    r"\b(projects?|experience|education|skills?|summary|objective)\b",
+    re.IGNORECASE,
+)
+_ORDINALS = {
+    "first": 0, "1st": 0,
+    "second": 1, "2nd": 1,
+    "third": 2, "3rd": 2,
+    "fourth": 3, "4th": 3,
+    "fifth": 4, "5th": 4,
+}
+_SECTION_CANONICAL = {
+    "project": "projects", "projects": "projects",
+    "experience": "experience",
+    "education": "education",
+    "skill": "skills", "skills": "skills",
+    "summary": "summary",
+    "objective": "summary",
+}
+
+
+def _resume_section_of(text: str) -> str | None:
+    """Canonical section name mentioned in ``text`` (or None)."""
+    m = _SECTION_NOUN_RE.search(text or "")
+    if not m:
+        return None
+    return _SECTION_CANONICAL.get(m.group(1).lower())
+
 
 # MEW upgrade — "explain how to build X" / "kaise banau" is an explanation
 # request, never a build command: it must not fall into task_create via a
@@ -324,6 +371,39 @@ class RuleBasedProvider(AIProvider):
                 "requires_tools": True,
                 "tools": ["resume"],
                 "response_mode": "grounded",
+            }
+        # MEW capability upgrade — "rewrite the second project": targeted
+        # improve of exactly one bullet in one section.
+        m_ord = _RESUME_ORDINAL_RE.search(text)
+        if m_ord:
+            noun = m_ord.group(3).lower()
+            ordinal = _ORDINALS.get(m_ord.group(2).lower())
+            classification = {
+                "intent": "resume_improve",
+                "requires_memory": True,
+                "requires_tools": True,
+                "tools": ["resume"],
+                "response_mode": "grounded",
+                "resume_section": (
+                    "projects" if noun == "project" else _resume_section_of(text)
+                ),
+            }
+            if noun == "project":
+                # The Nth PROJECT (entry), not the Nth bullet.
+                classification["resume_entry"] = ordinal
+            else:
+                classification["resume_index"] = ordinal
+            return classification
+        # MEW capability upgrade — "what's wrong with my projects section?":
+        # analysis focused on one section.
+        if _RESUME_SECTION_Q.search(text):
+            return {
+                "intent": "resume_analyze",
+                "requires_memory": True,
+                "requires_tools": True,
+                "tools": ["resume"],
+                "response_mode": "grounded",
+                "resume_section": _resume_section_of(text),
             }
         if _RESUME_SAVE_VERSION.search(text):
             return {

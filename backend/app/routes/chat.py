@@ -27,7 +27,10 @@ from app.workflows.persistence import (
 
 router = APIRouter()
 provider = get_provider()
-agent = SpideyAgent(provider, TOOL_REGISTRY)
+# MEW capability upgrade: the agent consults get_provider() per request so
+# PUT /api/system/provider switches take effect immediately (the selection
+# is persisted in backend/.provider.json by app.providers.manager).
+agent = SpideyAgent(provider, TOOL_REGISTRY, provider_factory=get_provider)
 
 # Phase 7: write-through persistence — finished runs land in workflow_runs /
 # workflow_steps so activity survives restarts. Registered on the process
@@ -193,11 +196,19 @@ async def post_chat_stream(req: ChatRequest):
 _ATTACH_TEXT_LIMIT = 8000  # extracted_text is bounded at write time
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 
-# A file counts as a resume when its name says so, or when the resume tool's
+# A file counts as a resume when its name says so, when the resume tool's
 # own section detector finds at least two real CV sections in the extracted
-# text. This is a heuristic, and it is labeled as one.
+# text, or when it has one CV section plus contact info (email/phone/
+# LinkedIn) — a weaker but still resume-shaped signal. This is a heuristic,
+# and it is labeled as one.
 _RESUME_NAME_HINT = re.compile(r"\b(resume|cv|curriculum\s*vitae)\b", re.IGNORECASE)
 _RESUME_CORE_SECTIONS = {"summary", "education", "experience", "projects", "skills"}
+_RESUME_CONTACT_HINT = re.compile(
+    r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
+    r"|(?:https?://)?(?:www\.)?linkedin\.com/\S+"
+    r"|\+?\d[\d\s().-]{6,}\d",
+    re.IGNORECASE,
+)
 
 
 def _classify_attachment_kind(filename: str, text: str) -> str:
@@ -207,6 +218,9 @@ def _classify_attachment_kind(filename: str, text: str) -> str:
     sections = detect_sections(text or "")
     hits = sum(1 for s in _RESUME_CORE_SECTIONS if sections.get(s))
     if hits >= 2:
+        return "resume"
+    if hits >= 1 and _RESUME_CONTACT_HINT.search(text or ""):
+        # One CV section + real contact info: resume-shaped, not a doc.
         return "resume"
     return "document"
 
@@ -497,6 +511,25 @@ async def delete_reminder(reminder_id: str):
         )
     except ToolError as exc:
         raise _tool_error(exc)
+
+
+# --- MEW initiation (capability upgrade) -------------------------------------
+
+# The greeting the frontend plays on launch. Served by the backend so
+# product copy is not hardcoded in the client; the voice line is run
+# through TTS hygiene (strip_for_speech) so it is speakable as-is.
+_MEW_GREETING_TEXT = "Hey, I'm MEW. What are we working on today?"
+
+
+@router.get("/api/conversation/greeting")
+async def conversation_greeting():
+    """MEW initiation content: greeting text + speakable voice line."""
+    from app.services.language import strip_for_speech
+
+    return {
+        "text": _MEW_GREETING_TEXT,
+        "voice_line": strip_for_speech(_MEW_GREETING_TEXT),
+    }
 
 
 # --- Proactive briefing (read-only) ------------------------------------------
