@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 import asyncio
 import logging
+import re
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,6 +13,45 @@ logger = logging.getLogger("spidey")
 
 # MISSION MEW: how often the background poller claims due reminders.
 _REMINDER_POLL_SECONDS = 30
+
+
+def _significant_words(text: str) -> set[str]:
+    """Words with real meaning for task/reminder matching: lowercase,
+    alphanumeric, longer than 3 characters."""
+    return set(re.findall(r"[a-z0-9]{4,}", (text or "").lower()))
+
+
+def task_matches_reminder(task_title: str, reminder_title: str) -> bool:
+    """True when a pending task and a due reminder share >= 2 significant
+    words — simple word-overlap linking, no NLP, no invented relations."""
+    return len(
+        _significant_words(task_title) & _significant_words(reminder_title)
+    ) >= 2
+
+
+async def _related_pending_tasks(
+    reminder_title: str, limit: int = 2
+) -> list[dict]:
+    """Pending tasks that keyword-match a due reminder title (max `limit`)."""
+    from app.tools.tasks import TaskTool
+
+    if not _significant_words(reminder_title):
+        return []
+    try:
+        out = await TaskTool().execute(action="list")
+    except Exception:
+        return []
+    scored: list[tuple[int, dict]] = []
+    for t in out.get("tasks", []) or []:
+        if not isinstance(t, dict) or t.get("done") or t.get("completed"):
+            continue
+        overlap = len(
+            _significant_words(t.get("title", "")) & _significant_words(reminder_title)
+        )
+        if overlap >= 2:
+            scored.append((overlap, t))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [t for _, t in scored[:limit]]
 
 
 async def _reminder_poller() -> None:
@@ -36,8 +76,30 @@ async def _reminder_poller() -> None:
             for item in tool.list_due():
                 telegram_sent = False
                 telegram_error: str | None = None
+                # MEW 2.0 — smart contextual notification: link a due
+                # reminder to pending tasks with keyword overlap, so the
+                # nudge names what's still unfinished. Simple word-overlap,
+                # max 2 related tasks.
+                context_note = ""
+                try:
+                    related = await _related_pending_tasks(item.get("title", ""))
+                except Exception:
+                    related = []
+                if related:
+                    names = ", ".join(f"'{t.get('title', '')}'" for t in related[:2])
+                    if len(related) == 1:
+                        context_note = (
+                            f"Related: your task {names} is still pending."
+                        )
+                    else:
+                        context_note = (
+                            f"Related: your tasks {names} are still pending."
+                        )
+                title = item.get("title", "")
+                if context_note:
+                    title = f"{title}\n\n{context_note}"
                 if is_configured():
-                    sent, msg = await send_reminder(item.get("title", ""))
+                    sent, msg = await send_reminder(title)
                     telegram_sent = sent
                     if not sent:
                         telegram_error = msg
@@ -47,6 +109,7 @@ async def _reminder_poller() -> None:
                         "reminder": item,
                         "telegram_sent": telegram_sent,
                         "telegram_error": telegram_error,
+                        "context_note": context_note or None,
                     }
                 )
         except asyncio.CancelledError:

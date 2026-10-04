@@ -95,6 +95,46 @@ _BRIEFING = re.compile(
     r"|\bwhat's\s+on\s+(my\s+)?(schedule|agenda)\b",
     re.IGNORECASE,
 )
+# Command Center (MEW 2.0): "what should I work on", "what is most urgent".
+_COMMAND_CENTER = re.compile(
+    r"\bwhat\s+should\s+i\s+work\s+on\b"
+    r"|\bwhat\s+is\s+most\s+urgent\b"
+    r"|\bwhat\s+did\s+i\s+leave\s+unfinished\b"
+    r"|\bwhat\s+should\s+i\s+do\s+next\b"
+    r"|\bwhat\s+am\s+i\s+(currently\s+)?working\s+on\b"
+    r"|\bmy\s+priorities\b",
+    re.IGNORECASE,
+)
+# Goals (MEW 2.0): "I want to become better at X", "how am I progressing".
+# Checked BEFORE _KNOWLEDGE_LEARN ("my goal is X" would match it).
+_GOALS = re.compile(
+    r"\bi\s+want\s+to\s+become\s+better\s+at\b"
+    r"|\bmy\s+goal\s+is\b"
+    r"|\badd\s+a\s+goal\b"
+    r"|\bhow\s+am\s+i\s+progressing\b"
+    r"|\bwhat\s+should\s+i\s+learn\s+next\b"
+    r"|\bshow\s+my\s+goals\b",
+    re.IGNORECASE,
+)
+# Research vault recall (MEW 2.0): "what did I research about X".
+# Checked BEFORE _DEEP_RESEARCH ("research" alone would match it).
+_RESEARCH_RECALL = re.compile(
+    r"\bwhat\s+did\s+i\s+(find|research|learn)\s+about\b"
+    r"|\bshow\s+my\s+research\s+on\b",
+    re.IGNORECASE,
+)
+# Action history + undo (MEW 2.0): "what did you change", "undo that".
+_ACTION_HISTORY = re.compile(
+    r"\bwhat\s+did\s+you\s+change\b"
+    r"|\bshow\s+(me\s+)?(the\s+)?action\s+history\b"
+    r"|\bwhat\s+did\s+you\s+do\b",
+    re.IGNORECASE,
+)
+_ACTION_UNDO = re.compile(
+    r"\bundo\s+(that|the\s+last|it)\b"
+    r"|\bundo\b",
+    re.IGNORECASE,
+)
 # News: "top 5 news", "latest news", "headlines", "news today" —
 # these don't always contain the word "search".
 _NEWS = re.compile(
@@ -643,6 +683,14 @@ class RuleBasedProvider(AIProvider):
                 "tools": ["generate"],
                 "response_mode": "answer",
             }
+        if _GOALS.search(text):
+            return {
+                "intent": "goals",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["goals"],
+                "response_mode": "grounded",
+            }
         if _KNOWLEDGE_QUERY.search(text):
             return {
                 "intent": "knowledge_query",
@@ -810,6 +858,14 @@ class RuleBasedProvider(AIProvider):
                 "tools": ["tasks"],
                 "response_mode": "list",
             }
+        if _RESEARCH_RECALL.search(text):
+            return {
+                "intent": "research_recall",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["research"],
+                "response_mode": "grounded",
+            }
         if _DEEP_RESEARCH.search(text):
             return {
                 "intent": "deep_research",
@@ -817,6 +873,30 @@ class RuleBasedProvider(AIProvider):
                 "requires_tools": True,
                 "tools": ["research"],
                 "response_mode": "answer",
+            }
+        if _COMMAND_CENTER.search(text):
+            return {
+                "intent": "command_center",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["command_center"],
+                "response_mode": "grounded",
+            }
+        if _ACTION_UNDO.search(text):
+            return {
+                "intent": "action_undo",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["history"],
+                "response_mode": "grounded",
+            }
+        if _ACTION_HISTORY.search(text):
+            return {
+                "intent": "action_history",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["history"],
+                "response_mode": "grounded",
             }
         if _BRIEFING.search(text):
             return {

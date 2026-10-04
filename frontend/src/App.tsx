@@ -4,6 +4,7 @@ import { HexGridBackground } from './components/hud';
 import { MewEmblem } from './components/MewEmblem';
 import { CoreStatus } from './components/CoreStatus';
 import { MewView } from './components/MewView';
+import { KnowledgeGraph } from './components/KnowledgeGraph';
 import { SettingsTab } from './components/SettingsTab';
 
 /** Global SSE event bus: /api/events/stream with reconnect backoff. */
@@ -101,6 +102,7 @@ function HudClock() {
 
 function Shell() {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [graphOpen, setGraphOpen] = useState(false);
   useGlobalEvents();
 
   return (
@@ -135,6 +137,23 @@ function Shell() {
                 type="button"
                 onClick={() => {
                   playSfx('blip');
+                  setGraphOpen((o) => !o);
+                }}
+                title={graphOpen ? 'Back to conversation' : 'Knowledge graph'}
+                aria-label={graphOpen ? 'Back to conversation' : 'Open knowledge graph'}
+                aria-pressed={graphOpen}
+                className={`flex h-9 w-9 items-center justify-center rounded-lg border text-base transition-all ${
+                  graphOpen
+                    ? 'border-accent/70 bg-accent/15 text-accent'
+                    : 'border-accent/25 bg-carbon/60 text-cyan-200/60 hover:border-accent/50 hover:text-accent'
+                }`}
+              >
+                🕸
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  playSfx('blip');
                   setSettingsOpen((o) => !o);
                 }}
                 title={settingsOpen ? 'Back to conversation' : 'Settings'}
@@ -153,9 +172,13 @@ function Shell() {
         </header>
 
         <main>
-          {/* Both views stay mounted so voice, chat, and polling persist. */}
-          <div hidden={settingsOpen}>
+          {/* Views stay mounted so voice, chat, and polling persist.
+              Graph sits alongside settings as an optional overlay view. */}
+          <div hidden={settingsOpen || graphOpen}>
             <MewView />
+          </div>
+          <div hidden={!graphOpen}>
+            <KnowledgeGraph />
           </div>
           <div hidden={!settingsOpen}>
             <SettingsTab />

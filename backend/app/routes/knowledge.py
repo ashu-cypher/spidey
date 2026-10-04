@@ -81,3 +81,33 @@ async def remove_document(document_id: str):
         return delete_document(document_id)
     except ToolError as exc:
         raise HTTPException(404, exc.user_message)
+
+
+@router.get("/graph")
+async def get_graph():
+    """Lightweight view of the personal knowledge graph for the SVG widget.
+
+    Returns {"entities": [{id, type, name}], "relations": [{from, to, relation}]}
+    with relations deduplicated across entities.
+    """
+    from app.services.knowledge_graph import find_entities, relations_for
+
+    entities = find_entities()  # newest first, limit 50
+    seen: set[tuple[str, str, str]] = set()
+    relations = []
+    for entity in entities:
+        for rel in relations_for(entity["name"]):
+            key = (rel["subject"], rel["object"], rel["relation"])
+            if key not in seen:
+                seen.add(key)
+                relations.append(
+                    {"from": rel["subject"], "to": rel["object"],
+                     "relation": rel["relation"]}
+                )
+    return {
+        "entities": [
+            {"id": e["id"], "type": e["type"], "name": e["name"]}
+            for e in entities
+        ],
+        "relations": relations,
+    }

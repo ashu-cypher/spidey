@@ -3,9 +3,12 @@ from app.tools.attachments import AttachmentTool
 from app.tools.briefing import BriefingTool
 from app.tools.calculator import CalculatorTool
 from app.tools.code import CodeTool
+from app.tools.command_center import CommandCenterTool
 from app.tools.computer import ComputerTool
 from app.tools.documents import DocumentTool
 from app.tools.generate import GenerateTool
+from app.tools.goals import GoalsTool
+from app.tools.history import HistoryTool
 from app.tools.knowledge import KnowledgeTool
 from app.tools.learning import LearningTool
 from app.tools.memory_tool import MemoryTool
@@ -26,9 +29,12 @@ __all__ = [
     "BriefingTool",
     "CalculatorTool",
     "CodeTool",
+    "CommandCenterTool",
     "ComputerTool",
     "DocumentTool",
     "GenerateTool",
+    "GoalsTool",
+    "HistoryTool",
     "KnowledgeTool",
     "LearningTool",
     "MemoryTool",
@@ -57,6 +63,9 @@ TOOL_REGISTRY: dict[str, BaseTool] = {
     "search": SearchTool(),
     "research": ResearchTool(),
     "briefing": BriefingTool(),
+    "command_center": CommandCenterTool(),
+    "goals": GoalsTool(),
+    "history": HistoryTool(),
     "wikipedia": WikipediaTool(),
     "documents": DocumentTool(),
     "code": CodeTool(),

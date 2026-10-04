@@ -66,8 +66,11 @@ _VERIFY_KEYS: dict[str, tuple[str, ...]] = {
     "rag": ("results", "documents", "error"),
     "resume": ("analysis", "suggestions", "job_match", "versions", "version"),
     "search": ("results", "error"),
-    "research": ("report", "error"),
+    "research": ("report", "vault", "error"),
     "briefing": ("briefing", "error"),
+    "command_center": ("priorities", "error"),
+    "goals": ("goal", "goals", "progress", "suggestion", "error"),
+    "history": ("actions", "undone", "error"),
     "wikipedia": ("article", "error"),
     "documents": ("document", "documents", "deleted"),
     "code": ("explanation",),
@@ -204,6 +207,9 @@ _TOOL_NARRATION = {
     "search": "Searching the web…",
     "research": "Deep researching…",
     "briefing": "Preparing your briefing…",
+    "command_center": "Checking your priorities…",
+    "goals": "Looking at your goals…",
+    "history": "Checking action history…",
     "wikipedia": "Looking up Wikipedia…",
     "rag": "Searching your documents…",
     "documents": "Working with your documents…",
@@ -1450,6 +1456,8 @@ class SpideyAgent:
                         if tn in tool_results
                     ]
 
+            # MEW 2.0: record side-effecting runs in the action log.
+            self._log_actions_from_run(intent, tool_results)
             facts = self._compose_facts(
                 intent, message, tool_results, mems, lang,
                 attachments=attachment_block,
@@ -1528,6 +1536,8 @@ class SpideyAgent:
             await _step(
                 "Verify results", "verify", lambda: self._verify(tool_results)
             )
+            # MEW 2.0: record side-effecting runs in the action log.
+            self._log_actions_from_run(intent, tool_results)
             facts = self._compose_facts(
                 intent, message, tool_results, mems, lang,
                 attachments=attachment_block,
@@ -1856,6 +1866,8 @@ class SpideyAgent:
                         if tn in tool_results
                     ]
 
+            # MEW 2.0: record side-effecting runs in the action log.
+            self._log_actions_from_run(intent, tool_results)
             facts = self._compose_facts(
                 intent, message, tool_results, mems, lang,
                 attachments=attachment_block,
@@ -1959,6 +1971,8 @@ class SpideyAgent:
             await _step(
                 "Verify results", "verify", lambda: self._verify(tool_results)
             )
+            # MEW 2.0: record side-effecting runs in the action log.
+            self._log_actions_from_run(intent, tool_results)
             facts = self._compose_facts(
                 intent, message, tool_results, mems, lang,
                 attachments=attachment_block,
@@ -2367,6 +2381,66 @@ class SpideyAgent:
             return {"saved": True, "reason": "already saved by memory tool"}
         return {"saved": False, "reason": "nothing salient"}
 
+    # MEW 2.0 — action history. Called after results verify (both run()
+    # and run_stream()): records side-effecting runs so the history tool
+    # can list and undo them. Never raises; only verified results are
+    # logged (failed tools are popped by the re-plan loop).
+    def _log_actions_from_run(self, intent: str, tool_results: dict) -> None:
+        try:
+            from app.services.action_log import log_action
+
+            if intent == "task_create":
+                task = (tool_results.get("tasks") or {}).get("task") or {}
+                if task.get("id"):
+                    log_action(
+                        "task_created",
+                        f"Created task: {task.get('title', 'Untitled')}",
+                        undo={"type": "delete_task", "id": task["id"]},
+                    )
+            elif intent == "reminder_create":
+                rem = (tool_results.get("reminders") or {}).get("reminder") or {}
+                if rem.get("id"):
+                    log_action(
+                        "reminder_created",
+                        f"Created reminder: {rem.get('title', 'Untitled')}",
+                        undo={"type": "delete_reminder", "id": rem["id"]},
+                    )
+            elif intent == "generate_file":
+                f = (tool_results.get("generate") or {}).get("file") or {}
+                file_id, ext = f.get("id"), f.get("format")
+                undo = None
+                if file_id and ext:
+                    path = (
+                        Path(__file__).resolve().parents[2]
+                        / "generated"
+                        / f"{file_id}.{ext}"
+                    )
+                    undo = {"type": "delete_file", "path": str(path)}
+                log_action(
+                    "file_generated",
+                    f"Generated file: {f.get('title', 'Untitled')} "
+                    f"({ext or 'file'})",
+                    undo=undo,
+                )
+            elif intent == "deep_research":
+                r = tool_results.get("research") or {}
+                if r.get("report"):
+                    log_action(
+                        "research_done",
+                        f"Researched: {r.get('topic', 'a topic')}",
+                        undo=None,
+                    )
+            elif intent == "goals":
+                g = (tool_results.get("goals") or {}).get("goal") or {}
+                if g.get("goal"):
+                    log_action(
+                        "goal_created",
+                        f"Created goal: {g.get('goal', '')}",
+                        undo=None,
+                    )
+        except Exception:
+            pass
+
     async def _tool_args(
         self,
         tool: str,
@@ -2467,9 +2541,22 @@ class SpideyAgent:
                 args["mode"] = "news"
             return args
         if tool == "research":
+            if intent == "research_recall":
+                return {
+                    "action": "recall",
+                    "query": self._extract_research_recall_query(message),
+                }
             return {"topic": message}
         if tool == "briefing":
             return {}
+        if tool == "command_center":
+            return {}
+        if tool == "goals":
+            return self._extract_goals_args(message)
+        if tool == "history":
+            if intent == "action_undo":
+                return {"action": "undo"}
+            return {"action": "list"}
         if tool == "generate":
             return self._extract_generate_args(message, conversation_id)
         if tool == "knowledge":
@@ -2810,6 +2897,47 @@ class SpideyAgent:
             return {"action": "topics"}
         return {"action": "topics"}
 
+    # MEW 2.0 — goals + research-vault argument extraction.
+    @staticmethod
+    def _extract_goals_args(message: str) -> dict:
+        msg = message.strip()
+        low = msg.lower()
+        if "how am i progressing" in low:
+            return {"action": "report"}
+        if "what should i learn next" in low:
+            return {"action": "suggest_next"}
+        if "show my goals" in low:
+            return {"action": "list"}
+        m = re.search(r"\bmark\b(.{0,80}?)\bmilestone\b.{0,40}?\bdone\b", msg, re.IGNORECASE)
+        if m:
+            return {
+                "action": "progress",
+                "milestone": m.group(1).strip().rstrip(" .,:"),
+                "done": True,
+            }
+        m = re.search(
+            r"\bi\s+want\s+to\s+become\s+better\s+at\s+(.+)"
+            r"|\bmy\s+goal\s+is(?:\s+to)?\s+(.+)"
+            r"|\badd\s+a\s+goal\s*[:\-]?\s*(.+)",
+            msg, re.IGNORECASE,
+        )
+        if m:
+            goal = next((g for g in m.groups() if g), "").strip().rstrip(".?!")
+            return {"action": "create", "goal": goal}
+        # Fallback: treat the whole message as the goal text.
+        return {"action": "create", "goal": msg}
+
+    @staticmethod
+    def _extract_research_recall_query(message: str) -> str:
+        m = re.search(
+            r"\bwhat\s+did\s+i\s+(?:find|research|learn)\s+about\s+(.+)"
+            r"|\bshow\s+my\s+research\s+on\s+(.+)",
+            message, re.IGNORECASE,
+        )
+        if m:
+            return next((g for g in m.groups() if g), "").strip().rstrip(".?!")
+        return message.strip()
+
     @staticmethod
     def _extract_document(message: str) -> dict:
         title, content, fmt = "Untitled document", "", "txt"
@@ -2847,6 +2975,71 @@ class SpideyAgent:
         if m and m.group(1).strip():
             return m.group(1).strip(), ""
         return message.strip(), ""
+
+    # MEW 2.0 — format goals tool output into a user-facing reply.
+    @staticmethod
+    def _format_goals(g: dict) -> str:
+        if not g:
+            return "I couldn't get your goals right now."
+        if g.get("error"):
+            return g["error"]
+        if "goal" in g:
+            goal = g["goal"]
+            lines = [f"🎯 Goal set: **{goal.get('goal', '')}**", "", "Milestones:"]
+            for i, m in enumerate(goal.get("milestones", []), 1):
+                lines.append(f"{i}. {m}")
+            lines.append("")
+            lines.append("Tell me when you finish one and I'll track it.")
+            return "\n".join(lines)
+        if "goals" in g:
+            goals = g["goals"] or []
+            if not goals:
+                return (
+                    "You don't have any goals yet — tell me something like "
+                    "\"I want to become better at AI development\" and I'll "
+                    "set it up with milestones."
+                )
+            lines = ["🎯 Your goals:", ""]
+            for goal in goals:
+                lines.append(
+                    f"- **{goal.get('goal', '')}** ({goal.get('status', 'active')})"
+                )
+                total = goal.get("total") or 0
+                done = goal.get("completed") or 0
+                lines.append(f"  {done}/{total} milestones done")
+            return "\n".join(lines)
+        if "progress" in g:
+            p = g["progress"]
+            if "message" in p:
+                return p["message"]
+            lines = ["📈 Your progress:", ""]
+            for goal in p.get("goals", []):
+                lines.append(
+                    f"- **{goal.get('goal', '')}**: "
+                    f"{goal.get('completed', 0)}/{goal.get('total', 0)} milestones"
+                )
+                nxt = goal.get("next_milestone")
+                if nxt:
+                    lines.append(f"  Next up: {nxt}")
+                for t in goal.get("learning_topics", [])[:3]:
+                    lines.append(f"  📚 Learning: {t}")
+            return "\n".join(lines)
+        if "updated" in g:
+            u = g["updated"]
+            return (
+                f"Nice — marked progress on **{u.get('goal', '')}**: "
+                f"{u.get('completed', 0)}/{u.get('total', 0)} milestones done."
+            )
+        if "suggestion" in g:
+            s = g["suggestion"]
+            if s.get("next"):
+                return (
+                    f"For **{s.get('goal', '')}**, your next step is: "
+                    f"{s.get('next')} ({s.get('milestone_number')}/"
+                    f"{s.get('of_total')})."
+                )
+            return s.get("message", "No suggestion right now.")
+        return "I couldn't get your goals right now."
 
     @staticmethod
     def _compose_facts(
@@ -3168,6 +3361,59 @@ class SpideyAgent:
             if not text:
                 return "I couldn't put together a briefing right now."
             return text
+        if intent == "command_center":
+            cc = tool_results.get("command_center", {})
+            if cc.get("error"):
+                return cc["error"]
+            text = cc.get("priorities", "")
+            if not text:
+                return "I couldn't pull together your priorities right now."
+            return text
+        if intent == "goals":
+            # _compose_facts is a staticmethod: call the static formatter
+            # via the class, not self.
+            return SpideyAgent._format_goals(tool_results.get("goals", {}))
+        if intent == "research_recall":
+            r = tool_results.get("research", {})
+            if r.get("error"):
+                return r["error"]
+            vault = r.get("vault") or []
+            if not vault:
+                return (
+                    "I don't have any saved research matching that — "
+                    "ask me to research a topic first and I'll remember it."
+                )
+            lines = ["Here's what I found in your research vault:", ""]
+            for e in vault[:5]:
+                lines.append(
+                    f"- **{e.get('topic', '')}** ({e.get('date', '')}, "
+                    f"{e.get('sources', 0)} sources)"
+                )
+                summary = (e.get("summary") or "")[:220]
+                if summary:
+                    lines.append(f"  {summary}…")
+            lines.append("")
+            first = vault[0].get("topic", "it")
+            lines.append(f"Want the full report on {first}?")
+            return "\n".join(lines)
+        if intent == "action_history":
+            h = tool_results.get("history", {})
+            if h.get("error"):
+                return h["error"]
+            actions = h.get("actions") or []
+            if not actions:
+                return "I haven't changed anything yet — no actions on record."
+            lines = ["Here's what I've changed recently:", ""]
+            for a in actions[:10]:
+                ts = (a.get("ts") or "")[:16].replace("T", " ")
+                lines.append(f"- {ts} — {a.get('detail', a.get('action', ''))}")
+            return "\n".join(lines)
+        if intent == "action_undo":
+            h = tool_results.get("history", {})
+            if h.get("error"):
+                return h["error"]
+            undone = h.get("undone") or {}
+            return undone.get("message", "Nothing to undo.")
         if intent == "wikipedia":
             wiki = tool_results.get("wikipedia", {})
             if wiki.get("error"):
