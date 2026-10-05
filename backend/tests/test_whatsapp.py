@@ -192,7 +192,9 @@ def test_env_takes_precedence_over_file(isolated, monkeypatch):
 def test_status_never_leaks_secrets(isolated):
     wa.save_config("tok123", "pnid456", "919876543210", "vtok", "asec")
     st = wa.status()
-    assert st == {"configured": True, "state": "configured"}
+    assert st["configured"] is True
+    assert st["state"] == "configured"
+    assert st["provider"] == "meta"
     blob = json.dumps(st)
     for secret in ("tok123", "pnid456", "vtok", "asec"):
         assert secret not in blob
@@ -450,3 +452,78 @@ async def test_webhook_processes_recipient(client, monkeypatch, isolated):
     assert r.status_code == 200
     await asyncio.sleep(0.2)  # let the background task run
     assert calls == ["hello mew"]
+
+
+# --- Simple (CallMeBot) mode ------------------------------------------------
+
+
+def test_simple_config_roundtrip(isolated):
+    wa.save_simple_config("+91 98765 43210", "abc123")
+    assert wa._get_provider() == "callmebot"
+    assert wa._get_simple_phone() == "919876543210"
+    assert wa._get_simple_apikey() == "abc123"
+    assert wa.is_configured() is True
+
+
+def test_provider_defaults_to_meta(isolated):
+    assert wa._get_provider() == "meta"
+    assert wa.is_configured() is False
+
+
+@pytest.mark.asyncio
+async def test_send_via_callmebot_success(isolated, monkeypatch):
+    wa.save_simple_config("919876543210", "key123")
+
+    class _GetClient:
+        def __init__(self, text):
+            self._text = text
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url):
+            assert "api.callmebot.com/whatsapp.php" in url
+            assert "phone=919876543210" in url
+            assert "apikey=key123" in url
+            r = _FakeResponse({})
+            r.text = "Message queued. You will receive it soon."
+            return r
+
+    monkeypatch.setattr(wa, "_make_client", lambda **kw: _GetClient(""))
+    monkeypatch.setattr(wa, "_throttle", lambda: _noop())
+    sent, msg = await wa.send_message("hello")
+    assert sent is True
+    assert "whatsapp" in msg.lower()
+
+
+@pytest.mark.asyncio
+async def test_send_via_callmebot_rejected(isolated, monkeypatch):
+    wa.save_simple_config("919876543210", "badkey")
+
+    class _GetClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url):
+            r = _FakeResponse({})
+            r.text = "ERROR: apikey is not valid"
+            return r
+
+    async def _noop():
+        return None
+
+    monkeypatch.setattr(wa, "_make_client", lambda **kw: _GetClient())
+    monkeypatch.setattr(wa, "_throttle", lambda: _noop())
+    sent, msg = await wa.send_message("hello")
+    assert sent is False
+    assert "callmebot" in msg.lower()
+
+
+async def _noop():
+    return None

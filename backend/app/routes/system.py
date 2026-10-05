@@ -282,16 +282,59 @@ async def config_telegram(body: dict):
 
 @router.post("/api/system/whatsapp/test")
 async def test_whatsapp(body: dict | None = None):
-    """Test the WhatsApp Cloud API connection (Graph API /me).
+    """Test the WhatsApp connection.
 
-    Returns the honest result: verified, not configured, or the real
-    error. Never claims success unless Meta's API confirms it. Accepts
-    optional {"token": ..., "phone_number_id": ..., "recipient": ...} to
-    test not-yet-saved form values; otherwise tests the stored config.
+    - SIMPLE mode: {"mode": "simple", "phone": "...", "apikey": "..."} —
+      sends a real test message to your WhatsApp (the only way to verify
+      a CallMeBot key). Nothing is saved.
+    - META mode: {"token": ..., "phone_number_id": ..., "recipient": ...}
+      tests not-yet-saved form values via Graph API /me; empty body tests
+      the stored config.
+
+    Returns the honest result. Never claims success unless the provider
+    confirms it.
     """
-    from app.services.whatsapp import test_connection
+    from app.services.whatsapp import normalize_number, test_connection
 
     body = body or {}
+    if (body.get("mode") or "").strip().lower() == "simple":
+        import os
+        import tempfile
+        from app.services import whatsapp as wa
+
+        phone = normalize_number(body.get("phone") or "")
+        apikey = (body.get("apikey") or "").strip()
+        if not phone or not apikey:
+            return {
+                "ok": False,
+                "message": "Phone number and CallMeBot API key are required.",
+            }
+        # Test without touching the real config: point the module at a
+        # temp file for the duration of the test.
+        tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+        tmp.close()
+        orig = wa._CONFIG_PATH
+        try:
+            from pathlib import Path
+
+            wa._CONFIG_PATH = Path(tmp.name)
+            wa.save_simple_config(phone, apikey)
+            sent, msg = await wa.send_message(
+                "🕷 MEW test — WhatsApp reminders are working."
+            )
+        finally:
+            wa._CONFIG_PATH = orig  # type: ignore[attr-defined]
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+        if sent:
+            return {
+                "ok": True,
+                "message": "Test message sent — check your WhatsApp.",
+            }
+        return {"ok": False, "message": msg}
+
     token = (body.get("token") or "").strip()
     if token:
         # Testing form values: validate the token, then check the other
@@ -310,13 +353,39 @@ async def test_whatsapp(body: dict | None = None):
 async def config_whatsapp(body: dict):
     """Configure WhatsApp via Settings UI (alternative to env vars).
 
-    Body: {"token": "...", "phone_number_id": "...", "recipient": "...",
-    optional "verify_token", "app_secret"}. Stored in a backend-only
-    config file (~/.mew_whatsapp.json), never exposed to the frontend,
-    never committed to git. Validates the token via Graph API /me before
-    saving. Tokens are accepted in but never returned.
+    Two modes:
+    - SIMPLE (no business account): {"mode": "simple", "phone": "...",
+      "apikey": "..."} — free CallMeBot path, send-only. Saved directly
+      (the apikey is verified on the first real send).
+    - META (business): {"token": "...", "phone_number_id": "...",
+      "recipient": "...", optional "verify_token", "app_secret"}.
+
+    Stored in a backend-only config file (~/.mew_whatsapp.json), never
+    exposed to the frontend, never committed to git. Tokens are accepted
+    in but never returned.
     """
-    from app.services.whatsapp import save_config, validate_credentials
+    from app.services.whatsapp import (
+        save_config,
+        save_simple_config,
+        validate_credentials,
+    )
+
+    mode = (body.get("mode") or "").strip().lower()
+    if mode == "simple":
+        phone = (body.get("phone") or "").strip()
+        apikey = (body.get("apikey") or "").strip()
+        if not phone:
+            return {"ok": False, "message": "Your WhatsApp number is required."}
+        if not apikey:
+            return {"ok": False, "message": "CallMeBot API key is required."}
+        save_simple_config(phone, apikey)
+        return {
+            "ok": True,
+            "message": (
+                "WhatsApp (simple mode) configured. Reminders will arrive "
+                "as WhatsApp messages. Use Test to send yourself a message."
+            ),
+        }
 
     token = (body.get("token") or "").strip()
     phone_number_id = (body.get("phone_number_id") or "").strip()

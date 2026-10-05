@@ -66,7 +66,8 @@ async def _reminder_poller() -> None:
     records whether Telegram actually confirmed delivery.
     """
     from app.services.event_bus import publish
-    from app.services.telegram import is_configured, send_reminder
+    from app.services import telegram as tg
+    from app.services import whatsapp as wa
     from app.tools.reminders import ReminderTool
 
     tool = ReminderTool()
@@ -76,6 +77,8 @@ async def _reminder_poller() -> None:
             for item in tool.list_due():
                 telegram_sent = False
                 telegram_error: str | None = None
+                whatsapp_sent = False
+                whatsapp_error: str | None = None
                 # MEW 2.0 — smart contextual notification: link a due
                 # reminder to pending tasks with keyword overlap, so the
                 # nudge names what's still unfinished. Simple word-overlap,
@@ -98,8 +101,15 @@ async def _reminder_poller() -> None:
                 title = item.get("title", "")
                 if context_note:
                     title = f"{title}\n\n{context_note}"
-                if is_configured():
-                    sent, msg = await send_reminder(title)
+                # Delivery chain: WhatsApp first (user's preferred channel
+                # for personal reminders), then Telegram, then in-app.
+                if wa.is_configured():
+                    sent, msg = await wa.send_reminder(title)
+                    whatsapp_sent = sent
+                    if not sent:
+                        whatsapp_error = msg
+                if tg.is_configured():
+                    sent, msg = await tg.send_reminder(title)
                     telegram_sent = sent
                     if not sent:
                         telegram_error = msg
@@ -107,6 +117,8 @@ async def _reminder_poller() -> None:
                     {
                         "type": "reminder_due",
                         "reminder": item,
+                        "whatsapp_sent": whatsapp_sent,
+                        "whatsapp_error": whatsapp_error,
                         "telegram_sent": telegram_sent,
                         "telegram_error": telegram_error,
                         "context_note": context_note or None,

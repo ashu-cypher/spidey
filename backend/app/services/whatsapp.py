@@ -143,6 +143,47 @@ def _get_app_secret() -> str:
     return str(_read_config_file().get("app_secret", "")).strip()
 
 
+def save_simple_config(phone: str, apikey: str) -> None:
+    """Save the SIMPLE (CallMeBot) WhatsApp config — no business account.
+
+    Free path for personal reminders: the user messages CallMeBot's
+    WhatsApp bot once to get an API key, then MEW sends via a plain
+    HTTPS GET. Send-only (no inbound webhook possible).
+    """
+    import json
+
+    p = _config_path()
+    p.write_text(
+        json.dumps(
+            {
+                "provider": "callmebot",
+                "phone": normalize_number(phone),
+                "apikey": apikey.strip(),
+            }
+        )
+    )
+    try:
+        p.chmod(0o600)  # owner-only
+    except Exception:
+        pass
+
+
+def _get_provider() -> str:
+    """'callmebot' when the simple config is present, else 'meta'."""
+    cfg = _read_config_file()
+    if cfg.get("provider") == "callmebot" and cfg.get("apikey"):
+        return "callmebot"
+    return "meta"
+
+
+def _get_simple_phone() -> str:
+    return normalize_number(str(_read_config_file().get("phone", "")))
+
+
+def _get_simple_apikey() -> str:
+    return str(_read_config_file().get("apikey", "")).strip()
+
+
 def normalize_number(number: str) -> str:
     """Digits only — WhatsApp `from` fields arrive without '+' or spaces,
     so compare recipients in normalized form."""
@@ -150,8 +191,12 @@ def normalize_number(number: str) -> str:
 
 
 def is_configured() -> bool:
-    """True when token + phone number ID + recipient are all set
-    (env vars or config file)."""
+    """True when either provider is ready:
+    - callmebot: phone + apikey in the config file, or
+    - meta: token + phone number ID + recipient (env vars or config file).
+    """
+    if _get_provider() == "callmebot":
+        return bool(_get_simple_phone()) and bool(_get_simple_apikey())
     return bool(_get_token()) and bool(_get_phone_number_id()) and bool(
         _get_recipient()
     )
@@ -234,15 +279,21 @@ _MAX_TEXT_LEN = 4000  # Meta caps text messages at 4096 chars
 async def send_message(text: str) -> tuple[bool, str]:
     """Send *text* to the configured recipient. Returns (sent, message).
 
-    ``sent`` is True ONLY when Meta's API confirms delivery
-    (``messages[0].id`` present). Outbound sends are throttled to at most
-    1 message per second.
+    Provider is chosen automatically:
+    - ``callmebot``: free send-only path, no business account needed.
+      ``sent`` is True when CallMeBot's API accepts the request.
+    - ``meta``: WhatsApp Cloud API. ``sent`` is True ONLY when Meta's API
+      confirms delivery (``messages[0].id`` present).
+
+    Outbound sends are throttled to at most 1 message per second.
     """
     if not is_configured():
         return False, "WhatsApp isn't configured yet."
     body = (text or "").strip()
     if not body:
         return False, "Nothing to send — the message is empty."
+    if _get_provider() == "callmebot":
+        return await _send_via_callmebot(body)
     if len(body) > _MAX_TEXT_LEN:
         body = body[:_MAX_TEXT_LEN] + "…(truncated)"
     await _throttle()
@@ -272,6 +323,42 @@ async def send_message(text: str) -> tuple[bool, str]:
         return True, f"sent (id {messages[0]['id']})"
     logger.warning("whatsapp send unconfirmed: %s", data)
     return False, "Meta didn't confirm the message — not sent."
+
+
+async def _send_via_callmebot(body: str) -> tuple[bool, str]:
+    """Send via CallMeBot's free WhatsApp API (no business account needed).
+
+    The user gets their apikey by messaging CallMeBot's WhatsApp bot once:
+    save +34 644 71 56 43 as a contact, send "I allow callmebot to send me
+    messages", and CallMeBot replies with the apikey.
+    """
+    import urllib.parse
+
+    phone = _get_simple_phone()
+    apikey = _get_simple_apikey()
+    if not phone or not apikey:
+        return False, "WhatsApp simple setup isn't complete yet."
+    await _throttle()
+    params = {
+        "phone": phone,
+        "text": body[:1500],  # CallMeBot is happiest with shorter texts
+        "apikey": apikey,
+    }
+    url = "https://api.callmebot.com/whatsapp.php?" + urllib.parse.urlencode(
+        params
+    )
+    try:
+        async with _make_client(timeout=20.0) as client:
+            resp = await client.get(url)
+            result = resp.text
+    except Exception as e:
+        logger.warning("callmebot send failed: %s", e)
+        return False, "Couldn't reach CallMeBot — check your network."
+    # CallMeBot returns a human-readable string; errors contain "ERROR".
+    if "ERROR" in result.upper():
+        logger.warning("callmebot rejected: %s", result[:200])
+        return False, f"CallMeBot rejected the message: {result[:200]}"
+    return True, "sent via WhatsApp"
 
 
 async def send_reminder(title: str) -> tuple[bool, str]:
@@ -304,4 +391,8 @@ def status() -> dict:
     network call on every status poll)."""
     if not is_configured():
         return {"configured": False, "state": "not_configured"}
-    return {"configured": True, "state": "configured"}
+    return {
+        "configured": True,
+        "state": "configured",
+        "provider": _get_provider(),  # 'callmebot' (simple) or 'meta'
+    }
