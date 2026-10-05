@@ -54,15 +54,26 @@ _SYSTEM_PROMPT = (
 class OpenAIProvider(AIProvider):
     name = "openai"
 
-    def __init__(self, api_key: str, model: str = "gpt-4o-mini") -> None:
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "gpt-4o-mini",
+        base_url: str = "https://api.openai.com/v1",
+    ) -> None:
         self.api_key = api_key
         self.model = model
+        self.base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
 
     def _ensure_configured(self) -> None:
         if not self.api_key:
             raise ProviderError(
-                "OpenAI provider is not configured: set OPENAI_API_KEY."
+                "OpenAI-compatible provider is not configured: set "
+                "OPENAI_API_KEY (use a Groq key from console.groq.com for "
+                "fast free inference)."
             )
+
+    def _endpoint(self) -> str:
+        return f"{self.base_url}/chat/completions"
 
     async def aclassify_intent(
         self, text: str, history: list | None = None, lang: str | None = None
@@ -72,7 +83,7 @@ class OpenAIProvider(AIProvider):
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(
-                    "https://api.openai.com/v1/chat/completions",
+                    self._endpoint(),
                     headers={"Authorization": f"Bearer {self.api_key}"},
                     json={
                         "model": self.model,
@@ -103,7 +114,7 @@ class OpenAIProvider(AIProvider):
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 resp = await client.post(
-                    "https://api.openai.com/v1/chat/completions",
+                    self._endpoint(),
                     headers={"Authorization": f"Bearer {self.api_key}"},
                     json={"model": self.model, "messages": messages},
                 )
@@ -129,7 +140,7 @@ class OpenAIProvider(AIProvider):
             async with httpx.AsyncClient(timeout=60.0) as client:
                 async with client.stream(
                     "POST",
-                    "https://api.openai.com/v1/chat/completions",
+                    self._endpoint(),
                     headers={"Authorization": f"Bearer {self.api_key}"},
                     json={
                         "model": self.model,

@@ -217,7 +217,9 @@ def build_provider(name: str, model: str | None = None):
         from app.config import settings
 
         return OpenAIProvider(
-            settings.openai_api_key, model=model or _DEFAULT_MODELS["openai"]
+            settings.openai_api_key,
+            model=model or settings.openai_model,
+            base_url=settings.openai_base_url,
         )
     return RuleBasedProvider()
 
@@ -262,16 +264,17 @@ async def probe_provider(name: str, model: str | None = None) -> tuple[bool, str
         try:
             import httpx
 
+            base = settings.openai_base_url.rstrip("/")
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(
-                    "https://api.openai.com/v1/models",
+                    f"{base}/models",
                     headers={"Authorization": f"Bearer {key}"},
                 )
         except Exception:
-            logger.warning("openai probe failed (network)")
+            logger.warning("openai-compatible probe failed (network)")
             return (
                 False,
-                "I couldn't reach OpenAI — please check the network "
+                "I couldn't reach the API — please check the network "
                 "connection and try again.",
             )
         if resp.status_code == 401:

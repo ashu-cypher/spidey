@@ -43,6 +43,67 @@ class ProviderUpdate(BaseModel):
     model: str | None = None
 
 
+@router.get("/api/system/llm-config")
+async def get_llm_config():
+    """Get the OpenAI-compatible API config (backend-only values).
+
+    Returns whether a key is set and the current base URL / model —
+    never the key itself. The frontend uses this to show status.
+    """
+    from app.config import settings
+
+    return {
+        "key_set": bool(settings.openai_api_key.strip()),
+        "base_url": settings.openai_base_url,
+        "model": settings.openai_model,
+    }
+
+
+@router.post("/api/system/llm-config")
+async def set_llm_config(body: dict):
+    """Configure the OpenAI-compatible API via Settings UI.
+
+    Body: {"api_key": "...", "base_url": "...", "model": "..."}.
+    Stored in a backend-only file (~/.mew_llm.json), never exposed to
+    the frontend, never committed. Env vars take precedence.
+
+    For fast free inference: get a key at console.groq.com, set base URL
+    to https://api.groq.com/openai/v1, model to llama-3.3-70b-versatile.
+    """
+    import json
+    from pathlib import Path
+
+    api_key = (body.get("api_key") or "").strip()
+    base_url = (body.get("base_url") or "").strip().rstrip("/")
+    model = (body.get("model") or "").strip()
+    if not api_key:
+        return {"ok": False, "message": "API key is required."}
+    if not base_url.startswith("https://"):
+        return {"ok": False, "message": "Base URL must start with https://"}
+    cfg_path = Path.home() / ".mew_llm.json"
+    cfg_path.write_text(json.dumps({
+        "openai_api_key": api_key,
+        "openai_base_url": base_url,
+        "openai_model": model or "llama-3.3-70b-versatile",
+    }))
+    try:
+        cfg_path.chmod(0o600)
+    except Exception:
+        pass
+    # Apply immediately without restart.
+    from app.config import settings
+    settings.openai_api_key = api_key
+    settings.openai_base_url = base_url
+    settings.openai_model = model or "llama-3.3-70b-versatile"
+    return {
+        "ok": True,
+        "message": (
+            "API configured. Now switch the provider to 'openai' above "
+            "and Apply."
+        ),
+    }
+
+
 @router.get("/api/system/metrics")
 async def system_metrics():
     tool = SystemControllerTool()

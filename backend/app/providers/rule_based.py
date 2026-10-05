@@ -206,6 +206,11 @@ _SYLLABUS_INGEST = re.compile(
     r"|\b(ingest|import)\b.{0,40}\b(exam\s+)?timetable\b",
     re.IGNORECASE,
 )
+_SYLLABUS_FETCH = re.compile(
+    r"\b(fetch|download|get)\b.{0,40}\b(official\s+)?syllabus\b"
+    r"|\bmy\s+syllabus\b.{0,20}\b(fetch|download|auto)\b",
+    re.IGNORECASE,
+)
 _SYLLABUS_QUERY = re.compile(
     r"\bwhat\s+subjects\b"
     r"|\bsubjects\s+do\s+i\s+have\b"
@@ -793,6 +798,14 @@ class RuleBasedProvider(AIProvider):
         # Syllabus intelligence + academic planner. These sit above the
         # generic task intents so "mark DBMS Unit 2 complete" never becomes
         # a task completion and "plan my week" never becomes a task.
+        if _SYLLABUS_FETCH.search(text):
+            return {
+                "intent": "syllabus_fetch",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["syllabus"],
+                "response_mode": "answer",
+            }
         if _SYLLABUS_INGEST.search(text):
             return {
                 "intent": "syllabus_ingest",

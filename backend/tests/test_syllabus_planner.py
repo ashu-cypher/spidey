@@ -482,3 +482,42 @@ async def test_agent_study_session_e2e():
     resp = await agent.run("start a DBMS study session", run, engine)
     assert "Study session started" in resp
     assert "Database Management Systems" in resp
+
+
+# --- Official syllabus fetch ------------------------------------------------
+
+import pytest as _pytest
+
+@_pytest.mark.asyncio
+async def test_fetch_official_unknown_key():
+    from app.tools.syllabus import fetch_official_syllabus
+    from app.tools.base import ToolError
+    with _pytest.raises(ToolError, match="Unknown official syllabus"):
+        await fetch_official_syllabus("nope_not_real")
+
+
+def test_official_syllabi_registry():
+    from app.tools.syllabus import OFFICIAL_SYLLABI
+    assert "sppu_te_comp_2024_sem5" in OFFICIAL_SYLLABI
+    entry = OFFICIAL_SYLLABI["sppu_te_comp_2024_sem5"]
+    assert entry["url"].startswith("https://")
+    assert entry["semester"] == 5
+
+
+def test_unit_roman_numerals():
+    from app.tools.syllabus import _UNIT_RE, _unit_number
+    m = _UNIT_RE.match("Unit I - Introduction to AI (09 hours)")
+    assert m is not None
+    assert _unit_number(m.group(1)) == 1
+    m = _UNIT_RE.match("Unit III - Search (09 Hours)")
+    assert _unit_number(m.group(1)) == 3
+    m = _UNIT_RE.match("Unit 2 - Networks")
+    assert _unit_number(m.group(1)) == 2
+
+
+def test_subject_code_with_suffix():
+    from app.tools.syllabus import _subject_starts
+    hit = _subject_starts("PCC301COM- Artificial Intelligence", [])
+    assert hit is not None
+    assert hit[1] == "PCC301COM"
+    assert "Artificial Intelligence" in hit[0]

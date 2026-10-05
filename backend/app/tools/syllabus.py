@@ -46,18 +46,30 @@ _MARKER = "[syllabus-doc]"
 _SUBJECT_PATTERNS = [
     re.compile(r"^(?:sub(?:ject)?\.?\s*[:\-–—]?\s*)?(\d{5,6})\s*[:.\-–—]\s*(.+?)\s*$"),
     re.compile(
-        r"^((?!unit\b|chapter\b|module\b|sem(?:ester)?\b)[A-Z]{2,5}\s*[-]?\s*\d{3,4}[A-Z]?)"
+        r"^((?!unit\b|chapter\b|module\b|sem(?:ester)?\b)[A-Z]{2,5}\s*[-]?\s*\d{3,4}[A-Z]{0,3})"
         r"\s*[:.\-–—]\s*(.+?)\s*$"
     ),
     re.compile(r"^(?:subject|course)\s*[:\-–—]\s*(.+?)\s*$", re.IGNORECASE),
 ]
-_CODE_IN_TEXT = re.compile(r"(\d{5,6}|[A-Z]{2,5}\s*[-]?\s*\d{3,4}[A-Z]?)")
+_CODE_IN_TEXT = re.compile(r"(\d{5,6}|[A-Z]{2,5}\s*[-]?\s*\d{3,4}[A-Z]{0,3})")
 _MD_HEADING = re.compile(r"^#{1,4}\s*(.+?)\s*$")
 
 _UNIT_RE = re.compile(
-    r"^(?:unit|chapter|module)\s*[-#:.\s]*(\d+)\s*[:.\-–—]?\s*(.+?)\s*$",
+    r"^(?:unit|chapter|module)\s*[-#:.\s]*"
+    r"(\d+|i{1,3}|iv|v|vi{0,3}|ix|x)\s*[:.\-–—]?\s*(.+?)\s*$",
     re.IGNORECASE,
 )
+_ROMAN_TO_INT = {
+    "i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5,
+    "vi": 6, "vii": 7, "viii": 8, "ix": 9, "x": 10,
+}
+
+
+def _unit_number(raw: str) -> int | None:
+    raw = raw.strip().lower()
+    if raw.isdigit():
+        return int(raw)
+    return _ROMAN_TO_INT.get(raw)
 _TOPIC_RE = re.compile(
     r"^\s*(?:[-•*–—]|\d{1,2}[.)]|\([a-z]\)|[a-z][.)])\s+(.+?)\s*$"
 )
@@ -218,7 +230,8 @@ def _parse_subject_block(name: str, code: str | None, lines: list[str]) -> dict:
         if um:
             if cur:
                 units.append(cur)
-            cur = {"number": um.group(1).lstrip("0") or "0",
+            num = _unit_number(um.group(1))
+            cur = {"number": str(num) if num else um.group(1).lstrip("0") or "0",
                    "title": _clean(um.group(2)), "topics": []}
             continue
         cm = _CREDITS_RE.search(line)
@@ -611,6 +624,86 @@ def match_exam_to_subject(exam_subject: str, subjects: list[dict]) -> dict | Non
 # Tool
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Official syllabus fetch — public university curriculum documents.
+# The user shouldn't have to hunt down and upload their syllabus when it's
+# a public document. Verified URLs only; factual structure extraction.
+# ---------------------------------------------------------------------------
+
+OFFICIAL_SYLLABI = {
+    # SPPU 2024 Pattern, Third Year Computer Engineering, Semester V.
+    # Verified 2026-10-05: official curriculum PDF hosted by the university.
+    "sppu_te_comp_2024_sem5": {
+        "label": "SPPU Computer Engineering 2024 Pattern — Semester V",
+        "url": "https://engg.dypvp.edu.in/DownloadS3File.aspx?file=TE-2024-Syllabus",
+        "university": "Savitribai Phule Pune University",
+        "course": "Computer Engineering",
+        "pattern": "2024",
+        "semester": 5,
+    },
+}
+
+
+async def fetch_official_syllabus(key: str) -> dict:
+    """Download a verified official syllabus PDF, extract its text, and
+    return (text, source_name). Raises ToolError on failure."""
+    import httpx
+    import os
+
+    entry = OFFICIAL_SYLLABI.get(key)
+    if not entry:
+        raise ToolError(f"Unknown official syllabus: {key}")
+    # Proxy-aware client (same pattern as search/whatsapp): works in
+    # sandboxes and on normal machines.
+    proxy = (
+        os.environ.get("https_proxy")
+        or os.environ.get("HTTPS_PROXY")
+        or os.environ.get("http_proxy")
+        or os.environ.get("HTTP_PROXY")
+    )
+    verify: str | bool = True
+    ca = os.environ.get("SSL_CERT_FILE")
+    if ca and os.path.exists(ca):
+        verify = ca
+    try:
+        async with httpx.AsyncClient(
+            timeout=60.0, follow_redirects=True,
+            trust_env=False, proxy=proxy, verify=verify,
+        ) as client:
+            resp = await client.get(entry["url"])
+            resp.raise_for_status()
+            data = resp.content
+    except Exception as e:
+        logger.warning("official syllabus fetch failed: %s", e)
+        raise ToolError(
+            f"Couldn't download the official syllabus ({entry['label']}). "
+            "Check your network or upload the PDF manually."
+        )
+    if len(data) < 10_000 or not data.startswith(b"%PDF"):
+        raise ToolError(
+            "The download didn't return a valid PDF — the university may "
+            "have moved the file. Upload the PDF manually instead."
+        )
+    # Extract text with pypdf (same as the RAG pipeline).
+    try:
+        from pypdf import PdfReader
+        import io
+
+        reader = PdfReader(io.BytesIO(data))
+        parts = []
+        for i, page in enumerate(reader.pages):
+            t = page.extract_text() or ""
+            if t.strip():
+                parts.append(f"[page {i + 1}]\n{t}")
+        text = "\n".join(parts)
+    except Exception as e:
+        logger.warning("official syllabus pdf extract failed: %s", e)
+        raise ToolError("Couldn't read the downloaded syllabus PDF.")
+    if len(text.strip()) < 500:
+        raise ToolError("The downloaded PDF had no readable text.")
+    return {"text": text, "entry": entry}
+
+
 class SyllabusTool(BaseTool):
     name = "syllabus"
     description = (
@@ -627,7 +720,15 @@ class SyllabusTool(BaseTool):
                 "enum": [
                     "ingest", "documents", "subjects", "subject", "term_work",
                     "practicals", "exams", "units", "search", "timeline",
+                    "fetch_official",
                 ],
+            },
+            "syllabus_key": {
+                "type": "string",
+                "description": (
+                    "Key into OFFICIAL_SYLLABI, e.g. "
+                    "'sppu_te_comp_2024_sem5'. Only for fetch_official."
+                ),
             },
             "document_text": {"type": "string"},
             "source_name": {"type": "string"},
@@ -642,10 +743,12 @@ class SyllabusTool(BaseTool):
     }
     output_schema = {"result": "object"}
     permission = "read"
-    action_permissions = {"ingest": "low_write"}
+    action_permissions = {"ingest": "low_write", "fetch_official": "low_write"}
 
     async def _run(self, **kwargs) -> dict:
         action = (kwargs.get("action") or "").strip().lower()
+        if action == "fetch_official":
+            return {"fetched": await self._fetch_official(kwargs)}
         if action == "ingest":
             return {"ingested": await self._ingest(kwargs)}
         if action == "documents":
@@ -710,6 +813,33 @@ class SyllabusTool(BaseTool):
         raise ToolError(f"Unknown syllabus action: {action!r}.")
 
     # -- ingest -----------------------------------------------------------
+    async def _fetch_official(self, kwargs: dict) -> dict:
+        """Download a verified official syllabus and ingest it.
+
+        Fixes the 'No syllabus data yet' dead-end: when the user's
+        syllabus is a public university document, MEW fetches it itself
+        instead of demanding an upload.
+        """
+        key = (kwargs.get("syllabus_key") or "").strip()
+        if not key:
+            # Default to the user's known context: SPPU Computer
+            # Engineering 2024 pattern, Semester V (from user profile).
+            key = "sppu_te_comp_2024_sem5"
+        fetched = await fetch_official_syllabus(key)
+        entry = fetched["entry"]
+        result = await self._ingest({
+            "document_text": fetched["text"],
+            "source_name": f"official-{key}.pdf",
+            "doc_type": "syllabus",
+        })
+        result["label"] = entry["label"]
+        result["note"] = (
+            "Fetched automatically from the official university curriculum. "
+            "Verify against your college's copy — elective choices and "
+            "minor variations may differ."
+        )
+        return result
+
     async def _ingest(self, kwargs: dict) -> dict:
         text = (kwargs.get("document_text") or "").strip()
         source = (kwargs.get("source_name") or "").strip() or "unnamed-document"

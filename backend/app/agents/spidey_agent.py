@@ -3029,6 +3029,8 @@ class SpideyAgent:
         self, intent: str, message: str, conversation_id: str | None
     ) -> dict:
         low = message.lower()
+        if intent == "syllabus_fetch":
+            return {"action": "fetch_official"}
         if intent == "syllabus_ingest":
             atts = self._get_full_attachments(conversation_id)
             docs = [(f, t) for f, k, t in atts
@@ -3060,7 +3062,20 @@ class SpideyAgent:
             if subject:
                 return {"action": "units", "subject": subject}
             return {"action": "subjects"}
-        # syllabus_query
+        # syllabus_query — auto-fetch the official syllabus when nothing is
+        # ingested yet, so "plan my sem 5" works without a manual upload.
+        # The fetch runs inline here; the original query args are returned
+        # after, so the tool executes against fresh data.
+        if intent in ("syllabus_query", "syllabus_exam", "study_plan",
+                      "syllabus_progress"):
+            try:
+                from app.tools.syllabus import load_documents
+                if not await load_documents():
+                    tool = self.tools.get("syllabus")
+                    if tool is not None:
+                        await tool.execute(action="fetch_official")
+            except Exception:
+                pass  # fetch failed — the query will report honestly
         if re.search(r"term\s*work", low):
             return {"action": "term_work"}
         if re.search(r"practical|oral", low):
@@ -3810,15 +3825,46 @@ class SpideyAgent:
         if intent == "resume_empty":
             return NO_CV_REPLY
         # -- Syllabus intelligence + academic planner ----------------------
+        if intent == "syllabus_fetch":
+            sy = tool_results.get("syllabus", {})
+            fetched = sy.get("fetched", {})
+            if not fetched:
+                return sy.get("error") or "Couldn't fetch the syllabus."
+            lines = [
+                f"Got your official syllabus — _{fetched.get('label', 'university curriculum')}_:"
+            ]
+            subs = fetched.get("subjects", [])
+            if subs:
+                lines.append(f"{len(subs)} subjects found:")
+                for s in subs:
+                    bit = f"- {s['name']}"
+                    if s.get("code"):
+                        bit += f" ({s['code']})"
+                    bit += f" — {s.get('units', 0)} units"
+                    lines.append(bit)
+            if fetched.get("note"):
+                lines.append(f"_{fetched['note']}_")
+            lines.append(
+                "Now try 'which subjects have end-sem exams', "
+                "'which have practical exams', or 'plan my sem 5'."
+            )
+            return "\n".join(lines)
         if intent == "syllabus_ingest":
             sy = tool_results.get("syllabus", {})
             ing = sy.get("ingested", {})
+            fetched = sy.get("fetched", {})
+            # fetch_official returns under "fetched"; normalize it.
+            if fetched and not ing:
+                ing = fetched
+                ing["source_name"] = ing.get("source_name", "official syllabus")
             if not ing:
                 return sy.get("error") or ""
             lines = [
                 f"Ingested `{ing.get('source_name')}` "
                 f"({ing.get('doc_type')}, {ing.get('derived_by')} extraction):"
             ]
+            if ing.get("label"):
+                lines.append(f"_{ing['label']}_")
             subs = ing.get("subjects", [])
             if subs:
                 lines.append(f"{len(subs)} subjects found:")

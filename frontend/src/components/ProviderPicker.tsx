@@ -25,6 +25,13 @@ export function ProviderPicker() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  // OpenAI-compatible API config (Groq etc.)
+  const [apiKey, setApiKey] = useState('');
+  const [baseUrl, setBaseUrl] = useState('https://api.groq.com/openai/v1');
+  const [apiModel, setApiModel] = useState('llama-3.3-70b-versatile');
+  const [keySet, setKeySet] = useState(false);
+  const [apiMsg, setApiMsg] = useState('');
+  const [apiBusy, setApiBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -46,6 +53,19 @@ export function ProviderPicker() {
         );
       } finally {
         if (!cancelled) setLoading(false);
+      }
+    })();
+    // Load saved OpenAI-compatible API config (status only, never the key).
+    void (async () => {
+      try {
+        const r = await fetch('/api/system/llm-config');
+        const cfg = await r.json();
+        if (cancelled) return;
+        setKeySet(!!cfg.key_set);
+        if (cfg.base_url) setBaseUrl(cfg.base_url);
+        if (cfg.model) setApiModel(cfg.model);
+      } catch {
+        /* optional — ignore */
       }
     })();
     return () => {
@@ -109,6 +129,31 @@ export function ProviderPicker() {
         );
       })
       .finally(() => setSaving(false));
+  };
+
+  const saveApiConfig = () => {
+    if (!apiKey.trim() || apiBusy) return;
+    setApiBusy(true);
+    setApiMsg('');
+    void fetch('/api/system/llm-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        api_key: apiKey.trim(),
+        base_url: baseUrl.trim(),
+        model: apiModel.trim(),
+      }),
+    })
+      .then((r) => r.json())
+      .then((r) => {
+        setApiMsg(r.message || (r.ok ? 'Saved.' : 'Failed.'));
+        if (r.ok) {
+          setKeySet(true);
+          setApiKey('');
+        }
+      })
+      .catch(() => setApiMsg('Could not reach the backend.'))
+      .finally(() => setApiBusy(false));
   };
 
   return (
@@ -208,6 +253,59 @@ export function ProviderPicker() {
         after the backend probes the model. Leave the model empty for the
         provider default.
       </p>
+      <div className="mt-4 border-t border-white/10 pt-3">
+        <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-cyan-200/60">
+          Fast cloud model (Groq — free)
+        </p>
+        <p className="mt-1 text-xs text-cyan-200/40">
+          For ChatGPT-like speed and quality without a local GPU: get a free
+          key at <span className="font-mono">console.groq.com</span>, paste it
+          below, Save, then switch the provider to{' '}
+          <span className="font-mono">openai</span> above and Apply.{' '}
+          {keySet && (
+            <span className="text-emerald-300">✓ API key saved.</span>
+          )}
+        </p>
+        <div className="mt-2 space-y-2">
+          <input
+            type="password"
+            className="hud-input w-full"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder="Groq API key (gsk_…)"
+            autoComplete="off"
+            spellCheck={false}
+          />
+          <input
+            className="hud-input w-full"
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            placeholder="https://api.groq.com/openai/v1"
+            autoComplete="off"
+            spellCheck={false}
+          />
+          <input
+            className="hud-input w-full"
+            value={apiModel}
+            onChange={(e) => setApiModel(e.target.value)}
+            placeholder="llama-3.3-70b-versatile"
+            autoComplete="off"
+            spellCheck={false}
+          />
+          <div className="flex items-center gap-3">
+            <HudButton
+              variant="primary"
+              onClick={saveApiConfig}
+              disabled={apiBusy || !apiKey.trim()}
+            >
+              {apiBusy ? 'Saving…' : 'Save API key'}
+            </HudButton>
+            {apiMsg && (
+              <span className="text-xs text-cyan-200/60">{apiMsg}</span>
+            )}
+          </div>
+        </div>
+      </div>
     </HudPanel>
   );
 }
