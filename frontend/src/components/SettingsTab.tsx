@@ -4,6 +4,7 @@ import { HudPanel, HudTitle } from './hud';
 import { MemoryPanel } from './MemoryPanel';
 import { ProviderPicker } from './ProviderPicker';
 import { TelegramConfig } from './TelegramConfig';
+import { WhatsAppConfig } from './WhatsAppConfig';
 import { VoiceTab } from './VoiceTab';
 import {
   AppearanceSection,
@@ -64,6 +65,8 @@ export function SettingsTab() {
       <ProviderPicker />
 
       <TelegramConfig />
+
+      <WhatsAppConfig />
 
       <HudPanel title="Voice & language">
         <VoiceTab />

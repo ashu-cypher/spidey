@@ -12,6 +12,8 @@ from app.tools.history import HistoryTool
 from app.tools.knowledge import KnowledgeTool
 from app.tools.learning import LearningTool
 from app.tools.memory_tool import MemoryTool
+from app.tools.news import NewsTool
+from app.tools.planner import PlannerTool
 from app.tools.project import ProjectTool
 from app.tools.rag_tool import RAGTool
 from app.tools.reminders import ReminderTool
@@ -19,6 +21,7 @@ from app.tools.research import ResearchTool
 from app.tools.resume import ResumeTool
 from app.tools.search import SearchTool
 from app.tools.shell import ShellTool
+from app.tools.syllabus import SyllabusTool
 from app.tools.system_controller import SystemControllerTool
 from app.tools.tasks import TaskTool
 from app.tools.wikipedia import WikipediaTool
@@ -38,6 +41,7 @@ __all__ = [
     "KnowledgeTool",
     "LearningTool",
     "MemoryTool",
+    "PlannerTool",
     "ProjectTool",
     "RAGTool",
     "ReminderTool",
@@ -45,6 +49,7 @@ __all__ = [
     "ResumeTool",
     "SearchTool",
     "ShellTool",
+    "SyllabusTool",
     "SystemControllerTool",
     "TaskTool",
     "ToolError",
@@ -77,7 +82,12 @@ TOOL_REGISTRY: dict[str, BaseTool] = {
     "generate": GenerateTool(),
     "knowledge": KnowledgeTool(),
     "learning": LearningTool(),
+    "news": NewsTool(),
     "project": ProjectTool(),
+    # Syllabus intelligence + academic planner: structured academic
+    # documents and study planning over them.
+    "syllabus": SyllabusTool(),
+    "planner": PlannerTool(),
     # Sandboxed system access: metrics auto-run; allowlisted commands auto-run;
     # everything else is confirmation-gated by the agent (permission_for).
     "system": SystemControllerTool(),

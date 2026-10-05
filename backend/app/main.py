@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import init_db
-from app.routes import chat, events, health, knowledge, profile, protocols, resume, system
+from app.routes import chat, events, health, knowledge, profile, protocols, resume, system, automation, whatsapp
 
 logger = logging.getLogger("spidey")
 
@@ -171,11 +171,19 @@ async def lifespan(app: FastAPI):
     model_poller = asyncio.create_task(
         _model_recovery_poller(), name="model-recovery-poller"
     )
+    # Automation Engine: separate 60s scheduler loop; coexists with the
+    # 30s reminder poller (independent task, independent stores).
+    from app.services.scheduler import scheduler_loop
+
+    scheduler_task = asyncio.create_task(
+        scheduler_loop(), name="automation-scheduler"
+    )
     try:
         yield
     finally:
         poller.cancel()
         model_poller.cancel()
+        scheduler_task.cancel()
 
 
 def create_app():
@@ -194,6 +202,8 @@ def create_app():
     app.include_router(events.router)
     app.include_router(protocols.router)
     app.include_router(system.router)
+    app.include_router(automation.router)
+    app.include_router(whatsapp.router)
 
     @app.get("/")
     async def root():

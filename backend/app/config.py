@@ -20,6 +20,15 @@ class Settings(BaseSettings):
     # here (backend env), never in frontend code.
     telegram_bot_token: str = ""  # reads TELEGRAM_BOT_TOKEN
     telegram_chat_id: str = ""  # reads TELEGRAM_CHAT_ID
+    # WhatsApp Cloud API integration: token, phone number ID and the
+    # single allowed recipient live ONLY here (backend env) or in the
+    # backend-only config file (~/.mew_whatsapp.json) — never in
+    # frontend code. verify_token/app_secret are for the webhook.
+    whatsapp_token: str = ""  # reads WHATSAPP_TOKEN
+    whatsapp_phone_number_id: str = ""  # reads WHATSAPP_PHONE_NUMBER_ID
+    whatsapp_recipient: str = ""  # reads WHATSAPP_RECIPIENT
+    whatsapp_verify_token: str = ""  # reads WHATSAPP_VERIFY_TOKEN
+    whatsapp_app_secret: str = ""  # reads WHATSAPP_APP_SECRET
 
 
 settings = Settings()

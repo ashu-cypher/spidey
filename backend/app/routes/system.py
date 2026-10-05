@@ -74,6 +74,15 @@ def _telegram_state() -> dict:
     return tg_status()
 
 
+def _whatsapp_state() -> dict:
+    """Honest WhatsApp state: mirrors _telegram_state — 'configured' only
+    when token + phone number ID + recipient are set; 'connected' is only
+    reported after a live test_connection() call, never here."""
+    from app.services.whatsapp import status as wa_status
+
+    return wa_status()
+
+
 def _model_display(provider: str, model: str | None, degraded: bool) -> str:
     """Honest header label for the MODEL readout.
 
@@ -153,6 +162,7 @@ async def system_status():
         "voice": {"stt": "browser", "tts": "browser"},
         "rag": _rag_state(),
         "telegram": _telegram_state(),
+        "whatsapp": _whatsapp_state(),
         "uptime_s": int(time.time() - _STARTED_AT),
     }
 
@@ -268,3 +278,77 @@ async def config_telegram(body: dict):
         return {"ok": False, "message": message}
     save_config(bot_token, chat_id)
     return {"ok": True, "message": "Telegram configured. Send a test reminder to verify delivery."}
+
+
+@router.post("/api/system/whatsapp/test")
+async def test_whatsapp(body: dict | None = None):
+    """Test the WhatsApp Cloud API connection (Graph API /me).
+
+    Returns the honest result: verified, not configured, or the real
+    error. Never claims success unless Meta's API confirms it. Accepts
+    optional {"token": ..., "phone_number_id": ..., "recipient": ...} to
+    test not-yet-saved form values; otherwise tests the stored config.
+    """
+    from app.services.whatsapp import test_connection
+
+    body = body or {}
+    token = (body.get("token") or "").strip()
+    if token:
+        # Testing form values: validate the token, then check the other
+        # fields the user pasted (nothing is saved yet).
+        ok, message = await test_connection(
+            token=token,
+            phone_number_id=(body.get("phone_number_id") or "").strip(),
+            recipient=(body.get("recipient") or "").strip(),
+        )
+        return {"ok": ok, "message": message}
+    ok, message = await test_connection()
+    return {"ok": ok, "message": message}
+
+
+@router.post("/api/system/whatsapp/config")
+async def config_whatsapp(body: dict):
+    """Configure WhatsApp via Settings UI (alternative to env vars).
+
+    Body: {"token": "...", "phone_number_id": "...", "recipient": "...",
+    optional "verify_token", "app_secret"}. Stored in a backend-only
+    config file (~/.mew_whatsapp.json), never exposed to the frontend,
+    never committed to git. Validates the token via Graph API /me before
+    saving. Tokens are accepted in but never returned.
+    """
+    from app.services.whatsapp import save_config, validate_credentials
+
+    token = (body.get("token") or "").strip()
+    phone_number_id = (body.get("phone_number_id") or "").strip()
+    recipient = (body.get("recipient") or "").strip()
+    verify_token = (body.get("verify_token") or "").strip()
+    app_secret = (body.get("app_secret") or "").strip()
+    if not token:
+        return {"ok": False, "message": "Access token is required."}
+    if not phone_number_id:
+        return {"ok": False, "message": "Phone number ID is required."}
+    if not recipient:
+        return {"ok": False, "message": "Recipient number is required."}
+    # Validate the token works before saving (mirror the telegram config
+    # flow: the values aren't saved yet, so the full connection check
+    # would wrongly fail on the not-yet-saved fields).
+    ok, message = await validate_credentials(token, phone_number_id)
+    if not ok:
+        return {"ok": False, "message": message}
+    save_config(token, phone_number_id, recipient, verify_token, app_secret)
+    return {
+        "ok": True,
+        "message": (
+            "WhatsApp configured. Sending works now; receiving needs the "
+            "webhook set up in the Meta app dashboard (see the setup steps)."
+        ),
+    }
+
+
+@router.get("/api/system/whatsapp/status")
+async def whatsapp_status():
+    """Honest WhatsApp status: configured + state. Never returns token
+    values — the frontend only needs to know READY vs NOT CONFIGURED."""
+    from app.services.whatsapp import status as wa_status
+
+    return wa_status()

@@ -443,6 +443,8 @@ export interface SystemStatusInfo {
   rag: string;
   /** Telegram state: {configured, state} — honest, never faked. */
   telegram?: { configured: boolean; state: string } | null;
+  /** WhatsApp state: {configured, state} — honest, never faked. */
+  whatsapp?: { configured: boolean; state: string } | null;
 }
 
 export async function getSystemStatus(): Promise<SystemStatusInfo> {

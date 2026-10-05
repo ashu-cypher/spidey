@@ -22,6 +22,7 @@ interface View {
   modelDegraded: boolean;
   memory: string | null;
   telegram: { configured: boolean; state: string } | null;
+  whatsapp: { configured: boolean; state: string } | null;
 }
 
 function Row({ label, value, ok }: { label: string; value: string; ok: boolean | null }) {
@@ -45,6 +46,7 @@ export function CoreStatus() {
     modelDegraded: false,
     memory: null,
     telegram: null,
+    whatsapp: null,
   });
 
   useEffect(() => {
@@ -66,6 +68,7 @@ export function CoreStatus() {
           modelDegraded: false,
           memory: null,
           telegram: null,
+          whatsapp: null,
         });
       } else {
         setView({
@@ -76,6 +79,7 @@ export function CoreStatus() {
           modelDegraded: info.model_degraded === true,
           memory: info.memory || null,
           telegram: info.telegram || null,
+          whatsapp: info.whatsapp || null,
         });
       }
     };
@@ -117,6 +121,14 @@ export function CoreStatus() {
         ? 'READY'
         : 'NOT CONFIGURED';
 
+  // WhatsApp: honest state from the backend, same contract as Telegram.
+  const whatsappLabel =
+    view.online !== true
+      ? '—'
+      : view.whatsapp?.state === 'configured'
+        ? 'READY'
+        : 'NOT CONFIGURED';
+
   return (
     <div className="mew-core-status" role="status" aria-label="MEW core status">
       <Row
@@ -153,6 +165,11 @@ export function CoreStatus() {
         label="TELEGRAM"
         value={telegramLabel}
         ok={view.online === true ? (view.telegram?.configured ? true : null) : null}
+      />
+      <Row
+        label="WHATSAPP"
+        value={whatsappLabel}
+        ok={view.online === true ? (view.whatsapp?.configured ? true : null) : null}
       />
     </div>
   );

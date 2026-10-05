@@ -146,6 +146,17 @@ _NEWS = re.compile(
     r"|\btell\s+me\s+(the\s+)?(top\s+|latest\s+)?news\b",
     re.IGNORECASE,
 )
+# News digest intent: category-flavored "give me today's AI news" /
+# "send today's news" / "what's the latest in AI" requests want a
+# multi-story digest from the dedicated news tool, not a generic search.
+# Checked BEFORE _NEWS (which still handles "top 5 news", "latest news",
+# "headlines" via the search tool).
+_NEWS_DIGEST = re.compile(
+    r"\bgive\s+me\s+(today'?s|the\s+latest)\s+([a-z]+\s+)?news\b"
+    r"|\bsend\s+(me\s+)?(today'?s|the\s+latest)\s+news\b"
+    r"|\bwhat'?s\s+the\s+latest\s+in\s+(ai|tech|technology|india|world|crypto|sports)\b",
+    re.IGNORECASE,
+)
 # Wikipedia: explicit "using Wikipedia"/"on Wikipedia"/"wiki" requests.
 # (Plain "who was X" stays web_search for fresher results.)
 _WIKIPEDIA = re.compile(
@@ -183,6 +194,59 @@ _LEARN = re.compile(
     r"|\btest\s+me\s+on\b"
     r"|\bi('|’)?m\s+learning\b"
     r"|\blearning\s+progress\b",
+    re.IGNORECASE,
+)
+# Syllabus intelligence + academic planner. Checked BEFORE the generic
+# task intents below ("mark DBMS Unit 2 complete" would otherwise match
+# _TASK_COMPLETE's bare "mark ... complete" alternative).
+_SYLLABUS_INGEST = re.compile(
+    r"\b(ingest|import|process|add)\b.{0,40}\bsyllabus\b"
+    r"|\bthis\s+is\s+my\s+syllabus\b"
+    r"|\bhere'?s\s+my\s+syllabus\b"
+    r"|\b(ingest|import)\b.{0,40}\b(exam\s+)?timetable\b",
+    re.IGNORECASE,
+)
+_SYLLABUS_QUERY = re.compile(
+    r"\bwhat\s+subjects\b"
+    r"|\bsubjects\s+do\s+i\s+have\b"
+    r"|\b(list|show)\b.{0,15}\b(my\s+)?subjects\b"
+    r"|\bmy\s+subjects\b"
+    r"|\bwhich\s+subjects\s+have\b"
+    r"|\bterm\s*work\b"
+    r"|\bpractical\s+(exam|subject)s?\b"
+    r"|\boral\s+(exam|subject)s?\b"
+    r"|\b(chapters?|units?|topics?)\s+(are\s+)?in\b"
+    r"|\bunits?\s+for\b"
+    r"|\bchapters?\s+of\b",
+    re.IGNORECASE,
+)
+_SYLLABUS_EXAM = re.compile(
+    r"\bwhen\s+is\s+(my\s+)?.{0,40}\bexam\b"
+    r"|\bwhich\s+exam\s+is\s+next\b"
+    r"|\bexam\s+(dates?|timetable|schedule|countdown)\b",
+    re.IGNORECASE,
+)
+_STUDY_PLAN = re.compile(
+    r"\bplan\s+my\s+(week|semester|day)\b"
+    r"|\bwhat\s+should\s+i\s+study\b"
+    r"|\bstudy\s+plan\b",
+    re.IGNORECASE,
+)
+_STUDY_SESSION = re.compile(
+    r"\bstart\s+(a\s+)?.{0,40}\bstudy\s+session\b",
+    re.IGNORECASE,
+)
+_STUDY_UPDATE = re.compile(
+    r"\bmark\b.{0,50}\bunit\b.{0,25}\bcomplete\b"
+    r"|\bcomplete\b.{0,30}\bunit\b.{0,10}\d"
+    r"|\bi\s+didn'?t\s+study\s+today\b"
+    r"|\bmove\s+today'?s\b",
+    re.IGNORECASE,
+)
+_SYLLABUS_PROGRESS = re.compile(
+    r"\bhow\s+much\s+syllabus\b"
+    r"|\bsyllabus\s+(is\s+)?(left|remaining|done|completed|complete)\b"
+    r"|\bsyllabus\s+progress\b",
     re.IGNORECASE,
 )
 # Knowledge graph (spec 5): statements that assert facts + "what do you
@@ -726,6 +790,65 @@ class RuleBasedProvider(AIProvider):
                 "tools": ["learning"],
                 "response_mode": "answer",
             }
+        # Syllabus intelligence + academic planner. These sit above the
+        # generic task intents so "mark DBMS Unit 2 complete" never becomes
+        # a task completion and "plan my week" never becomes a task.
+        if _SYLLABUS_INGEST.search(text):
+            return {
+                "intent": "syllabus_ingest",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["syllabus"],
+                "response_mode": "answer",
+            }
+        if _STUDY_SESSION.search(text):
+            return {
+                "intent": "study_session",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["syllabus", "learning", "planner"],
+                "response_mode": "answer",
+            }
+        if _STUDY_UPDATE.search(text):
+            return {
+                "intent": "study_update",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["planner"],
+                "response_mode": "answer",
+            }
+        if _SYLLABUS_PROGRESS.search(text):
+            return {
+                "intent": "syllabus_progress",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["planner"],
+                "response_mode": "answer",
+            }
+        if _STUDY_PLAN.search(text):
+            return {
+                "intent": "study_plan",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["planner"],
+                "response_mode": "answer",
+            }
+        if _SYLLABUS_EXAM.search(text):
+            return {
+                "intent": "syllabus_exam",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["syllabus"],
+                "response_mode": "answer",
+            }
+        if _SYLLABUS_QUERY.search(text):
+            return {
+                "intent": "syllabus_query",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["syllabus"],
+                "response_mode": "answer",
+            }
         if _EXPLAIN_HOW.search(text):
             # Explanation request, not a build: the existing chat path.
             return {
@@ -912,6 +1035,14 @@ class RuleBasedProvider(AIProvider):
                 "requires_memory": False,
                 "requires_tools": True,
                 "tools": ["wikipedia"],
+                "response_mode": "answer",
+            }
+        if _NEWS_DIGEST.search(text):
+            return {
+                "intent": "news",
+                "requires_memory": False,
+                "requires_tools": True,
+                "tools": ["news"],
                 "response_mode": "answer",
             }
         if _NEWS.search(text):
@@ -1103,21 +1234,25 @@ class RuleBasedProvider(AIProvider):
                 "You bet — I can calculate, remember things, manage "
                 "tasks and reminders, search the web, search your uploaded "
                 "documents, create documents and notes, explain code, analyze "
-                "your resume, report system status, and chat. Try: "
+                "your resume, report system status, understand your syllabus, "
+                "and plan your studies. Try: "
                 "'calculate 12 * 8', 'remind me to call mom tomorrow', "
-                "'system status', 'search the web for quantum computing', or "
+                "'system status', 'what subjects do I have', 'plan my week', or "
                 "'explain this code: ...'.",
                 "Zaroor! Main calculation kar sakta hoon, cheezein yaad rakh "
                 "sakta hoon, tasks aur reminders manage kar sakta hoon, web "
                 "search kar sakta hoon, aapke documents mein dhoondh sakta "
                 "hoon, notes bana sakta hoon, code samjha sakta hoon, resume "
                 "analyze kar sakta hoon, aur system status bata sakta hoon. "
+                "Aapka syllabus bhi samajh sakta hoon aur study plan bana "
+                "sakta hoon. "
                 "Try karo: '12 * 8 kitna hai', 'kal 9 baje mujhe assignment "
                 "yaad dila dena', ya 'mere tasks dikhao'.",
                 "ज़रूर! मैं गणना कर सकता हूँ, बातें याद रख सकता हूँ, टास्क और "
                 "रिमाइंडर संभाल सकता हूँ, वेब पर खोज सकता हूँ, आपके दस्तावेज़ों "
                 "में खोज सकता हूँ, नोट्स बना सकता हूँ, कोड समझा सकता हूँ, "
-                "रिज़्यूमे जाँच सकता हूँ और सिस्टम स्थिति बता सकता हूँ।",
+                "रिज़्यूमे जाँच सकता हूँ और सिस्टम स्थिति बता सकता हूँ। "
+                "आपका पाठ्यक्रम भी समझ सकता हूँ और अध्ययन योजना बना सकता हूँ।",
             )
         if _DEFINITION_ASK.search(text):
             # Honest fallback for knowledge questions the rule-based provider

@@ -66,6 +66,7 @@ _VERIFY_KEYS: dict[str, tuple[str, ...]] = {
     "rag": ("results", "documents", "error"),
     "resume": ("analysis", "suggestions", "job_match", "versions", "version"),
     "search": ("results", "error"),
+    "news": ("news", "digest", "error"),
     "research": ("report", "vault", "error"),
     "briefing": ("briefing", "error"),
     "command_center": ("priorities", "error"),
@@ -80,6 +81,15 @@ _VERIFY_KEYS: dict[str, tuple[str, ...]] = {
     "learning": ("saved", "topics", "updated", "explanation", "quiz", "error"),
     "project": ("analysis", "search", "error"),
     "computer": ("implemented", "message"),
+    "syllabus": (
+        "ingested", "subjects", "subject", "units", "documents",
+        "term_work_subjects", "practical_subjects", "exams", "results",
+        "timeline", "error",
+    ),
+    "planner": (
+        "plan", "today", "progress", "priority", "countdown", "updated",
+        "moved", "session", "next_unit", "error",
+    ),
 }
 
 # Pending confirmations live in memory: token -> pending action. Single-use,
@@ -205,6 +215,7 @@ _LLM_PREFERRED_INTENTS = frozenset(
 _TOOL_NARRATION = {
     "resume": "Analyzing your resume…",
     "search": "Searching the web…",
+    "news": "Fetching today's news…",
     "research": "Deep researching…",
     "briefing": "Preparing your briefing…",
     "command_center": "Checking your priorities…",
@@ -214,6 +225,8 @@ _TOOL_NARRATION = {
     "rag": "Searching your documents…",
     "documents": "Working with your documents…",
     "code": "Reading the code…",
+    "syllabus": "Reading your syllabus…",
+    "planner": "Planning your study…",
 }
 
 # "Analyze this" / "improve this" on a resume attachment routes into the
@@ -228,6 +241,21 @@ _RESUME_THIS_IMPROVE_RE = re.compile(
     r"\b(improve|rewrite|polish|fix|upgrade|strengthen|tailor)\b",
     re.IGNORECASE,
 )
+
+# Syllabus/planner subject extraction: scaffolding words stripped to reveal
+# the subject mention ("what chapters are in AI Unit 3" -> "AI").
+_SUBJECT_FILLER_RE = re.compile(
+    r"(?i)\b(what|what's|which|when|where|are|is|the|a|an|in|of|for|my|do|"
+    r"does|have|has|had|list|show|me|i|unit|units|chapter|chapters|topic|"
+    r"topics|exam|exams|subject|subjects|study|session|start|mark|complete|"
+    r"completed|today|tomorrow|plan|with|per|day|week|semester|hours?|hrs?|"
+    r"syllabus|left|much|next|move|didn|did|not|t)\b"
+)
+
+
+def _clean_candidate(text: str) -> str:
+    """Collapse whitespace for a subject candidate string."""
+    return re.sub(r"\s+", " ", (text or "").strip())
 
 
 class SpideyAgent:
@@ -2549,6 +2577,8 @@ class SpideyAgent:
             return {"topic": message}
         if tool == "briefing":
             return {}
+        if tool == "news":
+            return self._extract_news_args(message)
         if tool == "command_center":
             return {}
         if tool == "goals":
@@ -2568,7 +2598,15 @@ class SpideyAgent:
         if tool == "project":
             return self._extract_project_args(message)
         if tool == "learning":
+            if intent == "study_session":
+                return await self._extract_study_session_learning(message)
             return self._extract_learning_args(message)
+        if tool == "syllabus":
+            return await self._extract_syllabus_args(
+                intent, message, conversation_id
+            )
+        if tool == "planner":
+            return await self._extract_planner_args(intent, message)
         if tool == "wikipedia":
             return {"topic": message}
         if tool == "system":
@@ -2731,6 +2769,28 @@ class SpideyAgent:
     def _extract_due(message: str) -> str | None:
         # Owned by the task tool; the agent reuses it for chat extraction.
         return parse_due(message)
+
+    @staticmethod
+    def _extract_news_args(message: str) -> dict:
+        """Category keywords for the news digest ("give me today's AI news")."""
+        low = message.lower()
+        cats: list[str] = []
+        for keyword, category in (
+            ("ai", "AI"),
+            ("artificial intelligence", "AI"),
+            ("tech", "technology"),
+            ("india", "India"),
+            ("world", "world"),
+            ("crypto", "crypto"),
+            ("sports", "sports"),
+            ("business", "business"),
+        ):
+            if re.search(r"\b" + re.escape(keyword) + r"\b", low):
+                if category not in cats:
+                    cats.append(category)
+        if cats:
+            return {"action": "digest", "categories": cats}
+        return {"action": "digest"}
 
     @staticmethod
     def _extract_search_query(message: str) -> str:
@@ -2896,6 +2956,195 @@ class SpideyAgent:
         if re.search(r"\bwhat\s+am\s+i\s+learning\b", low) or "learning progress" in low:
             return {"action": "topics"}
         return {"action": "topics"}
+
+    # -- Syllabus intelligence + academic planner --------------------------
+    @staticmethod
+    def _subject_candidate(message: str) -> str:
+        """Best-guess subject mention in a message: strip question/planning
+        scaffolding, keep the remaining words ("what chapters are in AI
+        Unit 3" -> "AI"; "mark DBMS Unit 2 complete" -> "DBMS")."""
+        cleaned = _SUBJECT_FILLER_RE.sub(" ", message or "")
+        cleaned = re.sub(r"[^A-Za-z0-9+\- ]", " ", cleaned)
+        return _clean_candidate(" ".join(cleaned.split()))
+
+    async def _extract_syllabus_subject(self, message: str) -> str | None:
+        """Match the message's subject mention against stored subjects."""
+        from app.tools.syllabus import find_subject
+
+        try:
+            out = await self.tools["syllabus"].execute(action="subjects")
+        except ToolError:
+            return None
+        subjects = out.get("subjects", [])
+        if not subjects:
+            return None
+        candidate = self._subject_candidate(message)
+        hit = find_subject(candidate, subjects)
+        if hit:
+            return hit["name"]
+        # Last resort: any single remaining word as an acronym/code.
+        for word in candidate.split():
+            hit = find_subject(word, subjects)
+            if hit:
+                return hit["name"]
+        return None
+
+    @staticmethod
+    def _get_full_attachments(
+        conversation_id: str | None,
+    ) -> list[tuple[str, str, str]]:
+        """(filename, kind, extracted_text) for a conversation's attachments,
+        UNtruncated — for document ingestion (the turn-context block is
+        truncated to 2000 chars, too short for a syllabus)."""
+        if not conversation_id:
+            return []
+        try:
+            with get_session() as session:
+                rows = (
+                    session.execute(
+                        select(ConversationAttachment)
+                        .where(
+                            ConversationAttachment.conversation_id
+                            == conversation_id
+                        )
+                        .order_by(ConversationAttachment.created_at.desc())
+                        .limit(5)
+                    )
+                    .scalars()
+                    .all()
+                )
+                out = []
+                for r in rows:
+                    session.expunge(r)
+                    out.append(
+                        (r.filename or "attachment", r.kind or "document",
+                         r.extracted_text or "")
+                    )
+                return out
+        except Exception:
+            logger.exception("full attachment lookup failed")
+            return []
+
+    async def _extract_syllabus_args(
+        self, intent: str, message: str, conversation_id: str | None
+    ) -> dict:
+        low = message.lower()
+        if intent == "syllabus_ingest":
+            atts = self._get_full_attachments(conversation_id)
+            docs = [(f, t) for f, k, t in atts
+                    if k != "image" and t.strip()]
+            if not docs:
+                raise ToolError(
+                    "Attach your syllabus PDF first (the paperclip button), "
+                    "then say 'this is my syllabus'."
+                )
+            # Ingest the largest text attachment (timetables/notices are
+            # small; the syllabus is the big one).
+            filename, text = max(docs, key=lambda d: len(d[1]))
+            return {
+                "action": "ingest",
+                "document_text": text[:60000],
+                "source_name": filename,
+                "doc_type": "auto",
+            }
+        if intent == "syllabus_exam":
+            if re.search(r"which exam is next|exam countdown", low):
+                return {"action": "exams"}
+            subject = await self._extract_syllabus_subject(message)
+            args: dict = {"action": "exams"}
+            if subject:
+                args["subject"] = subject
+            return args
+        if intent == "study_session":
+            subject = await self._extract_syllabus_subject(message)
+            if subject:
+                return {"action": "units", "subject": subject}
+            return {"action": "subjects"}
+        # syllabus_query
+        if re.search(r"term\s*work", low):
+            return {"action": "term_work"}
+        if re.search(r"practical|oral", low):
+            return {"action": "practicals"}
+        if re.search(
+            r"(chapters?|units?|topics?)\s+(are\s+)?in\b"
+            r"|\bunits?\s+for\b|\bchapters?\s+of\b",
+            low,
+        ):
+            subject = await self._extract_syllabus_subject(message)
+            if not subject:
+                raise ToolError(
+                    "Which subject's units? Say e.g. "
+                    "'what chapters are in DBMS Unit 3'."
+                )
+            return {"action": "units", "subject": subject}
+        return {"action": "subjects"}
+
+    async def _extract_study_session_learning(self, message: str) -> dict:
+        """Explain the next incomplete unit (read-only peek, no logging —
+        the planner tool step logs the session itself)."""
+        subject = await self._extract_syllabus_subject(message)
+        topic = subject or "your next study unit"
+        context = ""
+        try:
+            nxt = await self.tools["planner"].execute(
+                action="next_unit", subject=subject or ""
+            )
+            unit = (nxt or {}).get("next_unit") or {}
+            if unit.get("subject"):
+                topic = (
+                    f"{unit['subject']} — Unit {unit.get('number')}: "
+                    f"{unit.get('title', '')}"
+                ).strip()
+                context = "; ".join(unit.get("topics", []))
+        except ToolError:
+            pass
+        return {"action": "explain", "topic": topic, "context": context}
+
+    async def _extract_planner_args(self, intent: str, message: str) -> dict:
+        low = message.lower()
+        if intent == "syllabus_progress":
+            return {"action": "progress"}
+        if intent == "study_update":
+            if re.search(
+                r"\bi\s+didn'?t\s+study\s+today\b|\bmove\s+today'?s\b",
+                message, re.IGNORECASE,
+            ):
+                return {"action": "missed_today"}
+            m = re.search(r"\bunit\s*(\d+)", message, re.IGNORECASE)
+            subject = await self._extract_syllabus_subject(message)
+            if not subject:
+                raise ToolError(
+                    "Which subject? Say e.g. 'mark DBMS Unit 2 complete'."
+                )
+            return {
+                "action": "mark_complete",
+                "subject": subject,
+                "unit": m.group(1) if m else "",
+            }
+        if intent == "study_session":
+            m = re.search(r"\bunit\s*(\d+)", message, re.IGNORECASE)
+            subject = await self._extract_syllabus_subject(message)
+            return {
+                "action": "start_session",
+                "subject": subject or "",
+                "unit": m.group(1) if m else "",
+            }
+        # study_plan
+        hours: float | None = None
+        m = re.search(
+            r"(\d+(?:\.\d+)?)\s*(?:hours?|hrs?)\b.{0,20}\b(?:per|a|each)?\s*day\b",
+            low,
+        )
+        if m:
+            hours = float(m.group(1))
+        args: dict = {}
+        if hours:
+            args["available_hours_per_day"] = hours
+        if re.search(r"\bwhat\s+should\s+i\s+study\b", low):
+            return {"action": "today", **args}
+        if re.search(r"\bplan\s+my\s+semester\b", low):
+            return {"action": "plan_semester", **args}
+        return {"action": "plan_week", **args}
 
     # MEW 2.0 — goals + research-vault argument extraction.
     @staticmethod
@@ -3361,6 +3610,17 @@ class SpideyAgent:
             if not text:
                 return "I couldn't put together a briefing right now."
             return text
+        if intent == "news":
+            news = tool_results.get("news", {})
+            if news.get("error"):
+                return news["error"]
+            text = news.get("digest", "")
+            if not text:
+                return (
+                    "I couldn't find any fresh news right now — "
+                    "the web search came back empty."
+                )
+            return text
         if intent == "command_center":
             cc = tool_results.get("command_center", {})
             if cc.get("error"):
@@ -3549,6 +3809,240 @@ class SpideyAgent:
             )
         if intent == "resume_empty":
             return NO_CV_REPLY
+        # -- Syllabus intelligence + academic planner ----------------------
+        if intent == "syllabus_ingest":
+            sy = tool_results.get("syllabus", {})
+            ing = sy.get("ingested", {})
+            if not ing:
+                return sy.get("error") or ""
+            lines = [
+                f"Ingested `{ing.get('source_name')}` "
+                f"({ing.get('doc_type')}, {ing.get('derived_by')} extraction):"
+            ]
+            subs = ing.get("subjects", [])
+            if subs:
+                lines.append(f"{len(subs)} subjects found:")
+                for s in subs:
+                    bit = f"- {s['name']}"
+                    if s.get("code"):
+                        bit += f" ({s['code']})"
+                    bit += f" — {s.get('units', 0)} units"
+                    lines.append(bit)
+            if ing.get("exam_dates"):
+                lines.append(f"{ing['exam_dates']} exam date(s) recorded.")
+            if ing.get("deadlines"):
+                lines.append(f"{ing['deadlines']} deadline(s) recorded.")
+            if ing.get("low_confidence"):
+                lines.append(
+                    "_Heads up: I couldn't pull subject structure out of this "
+                    "text, so syllabus answers may be limited._"
+                )
+            lines.append(
+                "Try 'what subjects do I have', 'when is my DBMS exam', "
+                "or 'plan my week'."
+            )
+            return "\n".join(lines)
+        if intent == "syllabus_query":
+            sy = tool_results.get("syllabus", {})
+            if sy.get("error"):
+                return sy["error"]
+            if "subjects" in sy:
+                subs = sy["subjects"]
+                lines = ["Your subjects:"]
+                for s in subs:
+                    bit = f"- **{s['name']}**"
+                    if s.get("code"):
+                        bit += f" ({s['code']})"
+                    meta = []
+                    if s.get("credits"):
+                        meta.append(f"{s['credits']} credits")
+                    if s.get("marks"):
+                        meta.append(f"{s['marks']} marks")
+                    if s.get("units"):
+                        meta.append(f"{s['units']} units")
+                    if meta:
+                        bit += " — " + ", ".join(meta)
+                    bit += f" _(from `{s.get('source')}`)_"
+                    lines.append(bit)
+                return "\n".join(lines)
+            if "term_work_subjects" in sy:
+                subs = sy["term_work_subjects"]
+                if not subs:
+                    return (
+                        "None of your subjects list term work "
+                        "(per the ingested syllabus)."
+                    )
+                lines = ["Subjects with term work:"]
+                for s in subs:
+                    bit = f"- **{s['name']}**"
+                    if s.get("marks"):
+                        bit += f" — {s['marks']} marks"
+                    bit += f" _(from `{s.get('source')}`)_"
+                    lines.append(bit)
+                return "\n".join(lines)
+            if "practical_subjects" in sy:
+                subs = sy["practical_subjects"]
+                if not subs:
+                    return (
+                        "None of your subjects list practical/oral exams "
+                        "(per the ingested syllabus)."
+                    )
+                lines = ["Subjects with practical/oral exams:"]
+                for s in subs:
+                    types = ", ".join(s.get("exam_types", [])) or "practical"
+                    lines.append(
+                        f"- **{s['name']}** ({types}) "
+                        f"_(from `{s.get('source')}`)_"
+                    )
+                return "\n".join(lines)
+            if "units" in sy:
+                u = sy["units"]
+                lines = [
+                    f"Units in **{u['subject']}** "
+                    f"_(from `{u.get('source')}`)_:"
+                ]
+                for un in u.get("units", []):
+                    lines.append(f"{un.get('number')}. {un.get('title')}")
+                    for t in (un.get("topics", []) or [])[:6]:
+                        lines.append(f"   - {t}")
+                return "\n".join(lines)
+            return ""
+        if intent == "syllabus_exam":
+            sy = tool_results.get("syllabus", {})
+            if sy.get("error"):
+                return sy["error"]
+            exams = sy.get("exams", [])
+            if not exams:
+                return (
+                    "No exam dates known yet — ingest an exam timetable "
+                    "(attach it and say 'import my exam timetable')."
+                )
+            lines = ["Exam dates:"]
+            for e in exams[:8]:
+                dl = e.get("days_left")
+                if dl is None:
+                    when = "date unclear"
+                elif dl >= 0:
+                    when = f"in {dl} days"
+                else:
+                    when = f"{-dl} days ago"
+                lines.append(
+                    f"- **{e.get('subject')}** ({e.get('type', 'theory')}) — "
+                    f"{e.get('date')} ({when}) _(from `{e.get('source')}`)_"
+                )
+            return "\n".join(lines)
+        if intent == "study_plan":
+            pl = tool_results.get("planner", {})
+            if pl.get("error"):
+                return pl["error"]
+            if "today" in pl:
+                t = pl["today"]
+                lines = [f"Today ({t.get('date')}):"]
+                sessions = t.get("sessions", [])
+                if not sessions:
+                    lines.append(
+                        "- Nothing scheduled — rest day or all caught up."
+                    )
+                for s in sessions:
+                    part = f" ({s['part']})" if s.get("part") else ""
+                    lines.append(
+                        f"- **{s['subject']}** — Unit {s['unit']}{part}: "
+                        f"{s.get('unit_title', '')} ({s['minutes']} min)"
+                    )
+                reasoning = (t.get("priority") or {}).get("reasoning")
+                if reasoning:
+                    lines += ["", reasoning]
+                if t.get("assumption"):
+                    lines += ["", f"_{t['assumption']}_"]
+                return "\n".join(lines)
+            if "plan" in pl:
+                p = pl["plan"]
+                lines = [f"Study plan ({p.get('hours_per_day')}h/day):"]
+                for d in (p.get("days") or [])[:7]:
+                    sess = ", ".join(
+                        f"{s['subject']} U{s['unit']} ({s['minutes']}m)"
+                        for s in d.get("sessions", [])
+                    )
+                    lines.append(f"- {d['date']}: {sess or '—'}")
+                if p.get("unscheduled"):
+                    lines.append(
+                        f"_Note: {len(p['unscheduled'])} unit(s) didn't fit — "
+                        "increase daily hours or extend the plan._"
+                    )
+                if p.get("hours_assumed"):
+                    lines.append(
+                        "_I assumed 2h/day — tell me your real availability "
+                        "and I'll replan._"
+                    )
+                return "\n".join(lines)
+            return ""
+        if intent == "study_session":
+            parts: list[str] = []
+            se = (tool_results.get("planner", {}).get("session")) or {}
+            if se:
+                parts.append(
+                    f"Study session started: **{se.get('subject')}** — "
+                    f"Unit {se.get('unit')}: {se.get('unit_title', '')}"
+                )
+                topics = se.get("topics", [])
+                if topics:
+                    parts.append("Topics: " + "; ".join(topics[:8]))
+            lr = (tool_results.get("learning", {}).get("explanation")) or {}
+            if lr.get("text"):
+                parts.append(lr["text"])
+            parts.append(
+                "_Say 'quiz me' when you're ready to test yourself, and "
+                "'mark <subject> Unit <n> complete' when done._"
+            )
+            return "\n\n".join(parts)
+        if intent == "study_update":
+            pl = tool_results.get("planner", {})
+            if pl.get("error"):
+                return pl["error"]
+            if "updated" in pl:
+                u = pl["updated"]
+                pr = u.get("progress", {})
+                return (
+                    f"Marked **{u.get('subject')}** Unit {u.get('unit')} "
+                    "complete. "
+                    f"Progress: {pr.get('completed')}/{pr.get('total')} "
+                    f"units ({pr.get('percent')}%). Future plan rebalanced."
+                )
+            if "moved" in pl:
+                m = pl["moved"]
+                if not m.get("moved"):
+                    return m.get("message", "Nothing to move.")
+                lines = ["Moved today's unfinished sessions forward:"]
+                for x in m["moved"]:
+                    lines.append(
+                        f"- {x['subject']} Unit {x['unit']} → {x['to']}"
+                    )
+                if m.get("could_not_fit"):
+                    lines.append(
+                        "_Some sessions wouldn't fit — consider more hours._"
+                    )
+                return "\n".join(lines)
+            return ""
+        if intent == "syllabus_progress":
+            pl = tool_results.get("planner", {})
+            if pl.get("error"):
+                return pl["error"]
+            pr = pl.get("progress", {})
+            rows = pr.get("subjects", [])
+            if not rows:
+                return pr.get("message", "No syllabus data yet.")
+            lines = ["Syllabus progress:"]
+            for r in rows:
+                lines.append(
+                    f"- **{r['subject']}**: {r['completed']}/{r['total']} "
+                    f"units ({r['percent']}%)"
+                )
+            ov = pr.get("overall", {})
+            lines.append(
+                f"Overall: {ov.get('completed')}/{ov.get('total')} units "
+                f"({ov.get('percent')}%)."
+            )
+            return "\n".join(lines)
         # -- MEW upgrade: generate / knowledge / project / learning ---------
         if intent == "generate_file":
             f = tool_results.get("generate", {}).get("file", {})
