@@ -875,3 +875,39 @@ def test_system_prompts_have_grounding_rules():
     for prompt in (ol._MEW_SYSTEM_PROMPT, op._MEW_SYSTEM_PROMPT):
         assert "GROUNDING RULES" in prompt
         assert "don't know" in prompt.lower() or "say so" in prompt.lower()
+
+
+# --- Correction intent + document QA routing --------------------------------
+
+import pytest as _pytest
+
+@_pytest.mark.asyncio
+async def test_correction_intent():
+    from app.providers.rule_based import RuleBasedProvider
+    p = RuleBasedProvider()
+    for text in ["stop repeating", "that's wrong", "you're repeating"]:
+        c = await p.aclassify_intent(text)
+        assert c["intent"] == "correction", f"failed for: {text}"
+
+
+@_pytest.mark.asyncio
+async def test_document_qa_routing():
+    from app.providers.rule_based import RuleBasedProvider
+    p = RuleBasedProvider()
+    # Should route to document_qa
+    for text in [
+        "analyze this document",
+        "analyze my pdf",
+        "summarize the report",
+        "what is this about",
+    ]:
+        c = await p.aclassify_intent(text)
+        assert c["intent"] == "document_qa", f"failed for: {text}"
+    # Should NOT route to document_qa
+    for text, expected in [
+        ("explain this code", "code_explain"),
+        ("explain my project", "project_analyze"),
+        ("summarize my annual report", "summarize_document"),
+    ]:
+        c = await p.aclassify_intent(text)
+        assert c["intent"] == expected, f"failed for: {text} got {c['intent']}"

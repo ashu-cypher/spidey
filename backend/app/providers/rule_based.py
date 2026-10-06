@@ -196,6 +196,17 @@ _LEARN = re.compile(
     r"|\blearning\s+progress\b",
     re.IGNORECASE,
 )
+# User corrections — "stop repeating", "that's wrong", "no, I meant X".
+# These must NOT regenerate; they need acknowledgment + clarification.
+# Checked early so a frustrated correction never becomes another bad answer.
+_CORRECTION = re.compile(
+    r"\bstop\s+(repeating|saying\s+that)\b"
+    r"|\bthat's\s+wrong\b|\bthats\s+wrong\b"
+    r"|\bno\s*,?\s*i\s+meant\b"
+    r"|\byou'?re\s+repeating\b"
+    r"|\bwrong\s+answer\b",
+    re.IGNORECASE,
+)
 # Syllabus intelligence + academic planner. Checked BEFORE the generic
 # task intents below ("mark DBMS Unit 2 complete" would otherwise match
 # _TASK_COMPLETE's bare "mark ... complete" alternative).
@@ -407,9 +418,10 @@ _ATTACHMENT_SEARCH = re.compile(
 # the generic intents below. The negative lookahead keeps "explain this
 # code" and "summarize this document" on their existing intents.
 _DOCUMENT_QA = re.compile(
-    r"\b(analy[sz]e|explain|summari[sz]e)\s+(this|that|it)\b"
-    r"(?!\s+(code|document|file)\b)"
-    r"|\bwhat\s+is\s+the\s+most\s+important\s+part\b",
+    r"\b(analy[sz]e|explain|summari[sz]e)\s+(this|that|it)\b(?!\s+code\b)"
+    r"|\b(analy[sz]e|explain|summari[sz]e)\s+(the\s+|my\s+)?(document|file|pdf|paper|report|article)\b"
+    r"|\bwhat\s+is\s+the\s+most\s+important\s+part\b"
+    r"|\bwhat(?:'s|\s+is)\s+(this|that|it)\s+about\b",
     re.IGNORECASE,
 )
 # Section-targeted resume phrasing, no "resume"/"cv" word needed. Kept
@@ -583,6 +595,16 @@ class RuleBasedProvider(AIProvider):
     name = "rule_based"
 
     def _classify(self, text: str, history: list[dict] | None = None) -> dict:
+        # User corrections come FIRST — a frustrated "stop repeating" must
+        # never regenerate another bad answer.
+        if _CORRECTION.search(text):
+            return {
+                "intent": "correction",
+                "requires_memory": False,
+                "requires_tools": False,
+                "tools": [],
+                "response_mode": "answer",
+            }
         if _RESUME_IMPROVE.search(text):
             return {
                 "intent": "resume_improve",

@@ -133,7 +133,7 @@ RAG_CONFIDENCE_THRESHOLD = 0.15
 # of the most recent attachments per conversation_id, each truncated to
 # this many chars when injected into the turn context.
 _ATTACHMENT_CONTEXT_MAX = 3
-_ATTACHMENT_CONTEXT_CHARS = 2000
+_ATTACHMENT_CONTEXT_CHARS = 8000
 
 # MEW upgrade — generate_prompt intent: rule-based prompt composer.
 _PROMPT_TARGET_RE = re.compile(r"\bprompt\s+for\s+([A-Za-z][\w.\-]*)\b")
@@ -3365,6 +3365,14 @@ class SpideyAgent:
             if "result" in calc:
                 return f"{calc.get('expression', '')} = {calc['result']}."
             return ""
+        if intent == "correction":
+            # User is frustrated with a previous answer. Acknowledge, don't
+            # regenerate — ask what they actually wanted.
+            return pick(
+                "You're right, that wasn't helpful. What did you actually want to know?",
+                "Sahi keh rahe ho, woh helpful nahi tha. Actually kya jaanna chahte ho?",
+                "आप सही कह रहे हैं, वह उपयोगी नहीं था। वास्तव में आप क्या जानना चाहते हैं?",
+            )
         if intent == "remember":
             saved = tool_results.get("memory", {}).get("saved", {})
             content = saved.get("content", message)
