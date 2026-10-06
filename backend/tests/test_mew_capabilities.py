@@ -927,3 +927,54 @@ async def test_syllabus_query_phrasings():
         assert c["intent"] == "syllabus_query", f"failed for: {text}"
     c = await p.aclassify_intent("again same")
     assert c["intent"] == "correction"
+
+
+@_pytest.mark.asyncio
+async def test_document_question_routing():
+    """Document questions reach document_qa; normal chat doesn't."""
+    from app.providers.rule_based import RuleBasedProvider
+    p = RuleBasedProvider()
+    doc_qs = [
+        "What projects are mentioned in my resume?",
+        "What skills do I have?",
+        "What is this document about?",
+        "What are the important points?",
+        "What's missing from my resume?",
+        "Which one is strongest?",
+        "Find Python in my resume",
+    ]
+    for text in doc_qs:
+        c = await p.aclassify_intent(text)
+        assert c["intent"] == "document_qa", f"failed for: {text}"
+    # Normal chat must NOT route to document_qa
+    c = await p.aclassify_intent("What is Flask?")
+    assert c["intent"] == "chat_fallback"
+
+
+def test_doc_section_extraction():
+    from app.agents.spidey_agent import SpideyAgent
+    block = (
+        "[Attachment: resume.pdf (resume)]\n"
+        "SKILLS\nPython, React\n\n"
+        "PROJECTS\nMEW - AI agent\n"
+    )
+    s = SpideyAgent._extract_doc_section(block, "What skills do I have?")
+    assert s and "Python" in s
+    s = SpideyAgent._extract_doc_section(
+        block, "What projects are mentioned?")
+    assert s and "MEW" in s
+    # No section keyword -> None
+    assert SpideyAgent._extract_doc_section(block, "Summarize this") is None
+
+
+def test_chat_fallback_doc_awareness():
+    """chat_fallback includes doc context only for doc-referencing Qs."""
+    from app.agents.spidey_agent import SpideyAgent
+    ab = "[Attachment: r.pdf (resume)]\nSome content here"
+    f = SpideyAgent._compose_facts(
+        "chat_fallback", "What is Flask?", {}, [], "en", attachments=ab)
+    assert "Some content" not in f
+    f = SpideyAgent._compose_facts(
+        "chat_fallback", "tell me more about my resume",
+        {}, [], "en", attachments=ab)
+    assert "Some content" in f

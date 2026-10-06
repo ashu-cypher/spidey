@@ -3353,6 +3353,68 @@ class SpideyAgent:
             return s.get("message", "No suggestion right now.")
         return "I couldn't get your goals right now."
 
+    # Section keywords for smart document_qa extraction. Maps question
+    # words to the section headers they target in resumes/documents.
+    _DOC_SECTION_MAP = {
+        "projects": ["projects", "personal projects", "key projects"],
+        "skills": ["skills", "technical skills", "technologies", "tech stack"],
+        "education": ["education", "academic", "qualification"],
+        "experience": ["experience", "work experience", "employment",
+                       "internship"],
+        "achievements": ["achievements", "accomplishments", "awards"],
+        "certifications": ["certifications", "certificates"],
+        "summary": ["summary", "objective", "profile", "about"],
+        "contact": ["contact", "email", "phone", "linkedin", "github"],
+    }
+
+    @classmethod
+    def _extract_doc_section(
+        cls, attachments: str, question: str
+    ):
+        q = question.lower()
+        wanted = None
+        for key, headers in cls._DOC_SECTION_MAP.items():
+            if (" " + q + " ").find(" " + key + " ") >= 0:
+                wanted = headers
+                break
+        if not wanted:
+            return None
+        text = attachments
+        # Strip attachment markup line if present
+        nl = text.find(chr(10))
+        if nl > 0 and text[:nl].startswith("[Attachment:"):
+            text = text[nl + 1:]
+        lines = text.split(chr(10))
+        start = -1
+        for i, line in enumerate(lines):
+            clean = line.strip().lower().rstrip(":")
+            for h in wanted:
+                if clean == h or clean.startswith(h + " "):
+                    start = i
+                    break
+            if start >= 0:
+                break
+        if start < 0:
+            return None
+        out = [lines[start].strip()]
+        all_headers = []
+        for hs in cls._DOC_SECTION_MAP.values():
+            all_headers.extend(hs)
+        for line in lines[start + 1:start + 41]:
+            s = line.strip()
+            sl = s.lower().rstrip(":")
+            is_h = False
+            if s and len(s) < 40:
+                for h in all_headers:
+                    if sl == h or sl.startswith(h):
+                        is_h = True
+                        break
+            if is_h:
+                break
+            out.append(line.rstrip())
+        body = chr(10).join(out).strip()
+        return body if len(body.strip()) > len(out[0].strip()) + 3 else None
+
     @staticmethod
     def _compose_facts(
         intent: str,
@@ -3825,6 +3887,18 @@ class SpideyAgent:
             # MEW upgrade: the conversation's attachments are the primary
             # context; RAG passages supplement only when the confidence gate
             # passes. Honest when neither exists.
+            #
+            # Smart extraction: when the question targets a section
+            # ("what projects..."), return just that section instead of
+            # dumping the whole document.
+            if attachments:
+                section = SpideyAgent._extract_doc_section(
+                    attachments, message)
+                if section:
+                    fname = re.search(
+                        r"\[Attachment: ([^\]]+?) \([a-z]+\)\]", attachments)
+                    src = f"From `{fname.group(1)}`" if fname else "From your document"
+                    return f"{src}:\n\n{section}"
             parts: list[str] = []
             if attachments:
                 # User-facing label: "[Attachment: f (kind)]" is internal
@@ -4228,6 +4302,27 @@ class SpideyAgent:
                 u = lr["updated"]
                 return f"Updated: {u.get('topic')} → {u.get('status')}."
             return ""
+        # Fallback: when a document is attached AND the question references
+        # it ("my resume", "this document", "it", "this"), hand its text to
+        # the model as grounded context so follow-ups answer from it.
+        # Unrelated questions ("what is Flask?") get the normal fallback —
+        # the document must not hijack normal chat. The rule-based provider
+        # echoes context; an LLM answers from it.
+        if attachments and attachments.strip():
+            low = message.lower()
+            doc_ref = re.search(
+                r"\b(my\s+)?(resume|cv|document|pdf|file)\b"
+                r"|\bthis\s+(document|pdf|file|resume)\b"
+                r"|\btell\s+me\s+more\b",
+                low,
+            )
+            if doc_ref:
+                pretty = re.sub(
+                    r"\[Attachment: ([^\]]+?) \([a-z]+?\)\]",
+                    r"From `\1`:",
+                    attachments,
+                )
+                return pretty
         return ""
 
     @staticmethod

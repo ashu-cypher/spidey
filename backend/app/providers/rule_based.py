@@ -208,6 +208,23 @@ _CORRECTION = re.compile(
     r"|\bagain\s+same\b|\bsame\s+(thing|answer|response)\b",
     re.IGNORECASE,
 )
+# Document questions — the user asks ABOUT an attached document/resume.
+# Checked before chat_fallback so "what projects are in my resume?" reaches
+# document_qa instead of the generic fallback. The agent re-verifies an
+# attachment actually exists before answering from it.
+_DOCUMENT_QUESTION = re.compile(
+    r"\bwhat\s+\w[\w\s]{0,30}?\b(in|on|from)\s+(my\s+)?"
+    r"(resume|cv|document|pdf|file)\b"
+    r"|\bwhat\s+(skills|projects|experience|education)\b"
+    r"[\w\s]{0,40}?\b(do\s+i\s+have|are\s+(there|listed|mentioned))\b"
+    r"|\bwhat\s+(is|are)\s+(this|that|it)\s+(document|pdf|file|about)\b"
+    r"|\bwhat\s+are\s+the\s+(important|key|main)\s+(points|takeaways)\b"
+    r"|\bwhat.s\s+missing\s+from\b"
+    r"|\bwhich\s+one\s+is\s+(strongest|best)\b"
+    r"|\b(search|find)\b[\w\s]{0,25}?\bin\s+(this|my|the)\s+"
+    r"(document|pdf|resume|cv|file)\b",
+    re.IGNORECASE,
+)
 # Syllabus intelligence + academic planner. Checked BEFORE the generic
 # task intents below ("mark DBMS Unit 2 complete" would otherwise match
 # _TASK_COMPLETE's bare "mark ... complete" alternative).
@@ -624,7 +641,7 @@ class RuleBasedProvider(AIProvider):
                 "response_mode": "grounded",
             }
         # MEW upgrade — attachment / resume-as-context / prompt intents.
-        if _DOCUMENT_QA.search(text):
+        if _DOCUMENT_QA.search(text) or _DOCUMENT_QUESTION.search(text):
             return {
                 "intent": "document_qa",
                 "requires_memory": False,
