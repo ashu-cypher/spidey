@@ -1054,6 +1054,12 @@ class SpideyAgent:
         images: list[str] | None = None,
     ) -> str:
         provider = self._generation_provider(intent)
+        # Grounding: only for real LLM generation. The rule-based provider
+        # echoes context verbatim as the final response — grounding markers
+        # would leak into user-visible text.
+        from app.providers.manager import LLM_PROVIDER_NAMES
+        if getattr(provider, "name", "") in LLM_PROVIDER_NAMES:
+            context = self._ground_context(context, intent)
         fn = provider.agenerate
         kwargs = {"context": context}
         kwargs.update(self._provider_kwargs(fn, lang, history))
@@ -1075,6 +1081,33 @@ class SpideyAgent:
             local_kwargs.update(self._provider_kwargs(local_fn, lang, history))
             return await local_fn(message, **local_kwargs)
 
+    @staticmethod
+    def _ground_context(context: str, intent: str) -> str:
+        """Prepend provenance labels to LLM context for grounding.
+
+        The model sees exactly which parts are verified tool output
+        (trustworthy) vs. empty/missing (must say "I don't know").
+        This is the last line of defense against hallucination: even if
+        the system prompt is weak, the context itself carries grounding.
+        Idempotent: already-grounded context is returned unchanged.
+        """
+        if not context or not context.strip():
+            return (
+                "[NO VERIFIED CONTEXT — no tool results, no documents, "
+                "no memory matches for this query. Answer ONLY from your "
+                "own general knowledge, and say 'I don't know' for anything "
+                "specific you aren't sure about. Do not invent details.]"
+            )
+        if context.startswith("[VERIFIED CONTEXT BELOW"):
+            return context
+        # Context exists: mark it as verified agent data.
+        return (
+            "[VERIFIED CONTEXT BELOW — these are real tool results / "
+            "document excerpts / stored facts. Base your answer on them. "
+            "If the answer isn't in this context, say so honestly.]\n\n"
+            f"{context}"
+        )
+
     async def _stream_chunks(
         self, message: str, context: str, history: list[dict], lang: str,
         provider: AIProvider, intent: str = "chat_fallback",
@@ -1082,6 +1115,9 @@ class SpideyAgent:
     ):
         """Yield provider stream chunks, with a single-chunk fallback for
         legacy duck-typed providers that predate ``agenerate_stream``."""
+        from app.providers.manager import LLM_PROVIDER_NAMES
+        if getattr(provider, "name", "") in LLM_PROVIDER_NAMES:
+            context = self._ground_context(context, intent)
         fn = getattr(provider, "agenerate_stream", None)
         if not callable(fn):
             yield await self._agenerate(

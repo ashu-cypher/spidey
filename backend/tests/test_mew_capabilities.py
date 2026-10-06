@@ -844,3 +844,34 @@ def test_conversation_greeting():
     assert body["text"] == "Hey, I'm MEW. What are we working on today?"
     assert body["voice_line"] == "Hey, I'm MEW. What are we working on today?"
     assert "`" not in body["voice_line"]
+
+
+# --- Grounding: anti-hallucination ----------------------------------------
+
+def test_ground_context_empty():
+    from app.agents.spidey_agent import SpideyAgent
+    out = SpideyAgent._ground_context("", "chat_fallback")
+    assert "NO VERIFIED CONTEXT" in out
+    assert "don't know" in out.lower() or "do not invent" in out.lower()
+
+
+def test_ground_context_with_facts():
+    from app.agents.spidey_agent import SpideyAgent
+    out = SpideyAgent._ground_context("The sky is blue.", "web_search")
+    assert "VERIFIED CONTEXT BELOW" in out
+    assert "The sky is blue." in out
+
+
+def test_ground_context_idempotent():
+    from app.agents.spidey_agent import SpideyAgent
+    once = SpideyAgent._ground_context("facts here", "chat_fallback")
+    twice = SpideyAgent._ground_context(once, "chat_fallback")
+    assert once == twice
+
+
+def test_system_prompts_have_grounding_rules():
+    from app.providers import ollama as ol
+    from app.providers import openai_provider as op
+    for prompt in (ol._MEW_SYSTEM_PROMPT, op._MEW_SYSTEM_PROMPT):
+        assert "GROUNDING RULES" in prompt
+        assert "don't know" in prompt.lower() or "say so" in prompt.lower()
