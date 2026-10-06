@@ -204,7 +204,8 @@ _CORRECTION = re.compile(
     r"|\bthat's\s+wrong\b|\bthats\s+wrong\b"
     r"|\bno\s*,?\s*i\s+meant\b"
     r"|\byou'?re\s+repeating\b"
-    r"|\bwrong\s+answer\b",
+    r"|\bwrong\s+answer\b"
+    r"|\bagain\s+same\b|\bsame\s+(thing|answer|response)\b",
     re.IGNORECASE,
 )
 # Syllabus intelligence + academic planner. Checked BEFORE the generic
@@ -225,9 +226,10 @@ _SYLLABUS_FETCH = re.compile(
 _SYLLABUS_QUERY = re.compile(
     r"\bwhat\s+subjects\b"
     r"|\bsubjects\s+do\s+i\s+have\b"
-    r"|\b(list|show)\b.{0,15}\b(my\s+)?subjects\b"
+    r"|\b(list|show|tell)\b.{0,20}\b(my\s+)?subjects\b"
     r"|\bmy\s+subjects\b"
-    r"|\bwhich\s+subjects\s+have\b"
+    r"|\bwhich\s+subjects\b"
+    r"|\bsubjects\s+(are\s+|will\s+be\s+)?(there\s+|in\s+)?(sem|semester)"
     r"|\bterm\s*work\b"
     r"|\bpractical\s+(exam|subject)s?\b"
     r"|\boral\s+(exam|subject)s?\b"

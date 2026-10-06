@@ -3098,17 +3098,29 @@ class SpideyAgent:
             if subject:
                 return {"action": "units", "subject": subject}
             return {"action": "subjects"}
-        # syllabus_query — auto-fetch the official syllabus when nothing is
-        # ingested yet, so "plan my sem 5" works without a manual upload.
-        # The fetch runs inline here; the original query args are returned
-        # after, so the tool executes against fresh data.
+        # syllabus_query — use the conversation's uploaded PDF first (the user
+        # attached it for exactly this), then the ingested store, then
+        # auto-fetch the official syllabus when nothing is available.
         if intent in ("syllabus_query", "syllabus_exam", "study_plan",
                       "syllabus_progress"):
             try:
                 from app.tools.syllabus import load_documents
                 if not await load_documents():
+                    # Try the uploaded attachment before hitting the network.
+                    atts = self._get_full_attachments(conversation_id)
+                    docs = [(f, t) for f, k, t in atts
+                            if k != "image" and t.strip()]
                     tool = self.tools.get("syllabus")
-                    if tool is not None:
+                    if docs and tool is not None:
+                        filename, text = max(
+                            docs, key=lambda d: len(d[1]))
+                        await tool.execute(
+                            action="ingest",
+                            document_text=text[:60000],
+                            source_name=filename,
+                            doc_type="auto",
+                        )
+                    elif tool is not None:
                         await tool.execute(action="fetch_official")
             except Exception:
                 pass  # fetch failed — the query will report honestly

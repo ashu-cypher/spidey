@@ -911,3 +911,19 @@ async def test_document_qa_routing():
     ]:
         c = await p.aclassify_intent(text)
         assert c["intent"] == expected, f"failed for: {text} got {c['intent']}"
+
+
+@_pytest.mark.asyncio
+async def test_syllabus_query_phrasings():
+    from app.providers.rule_based import RuleBasedProvider
+    p = RuleBasedProvider()
+    for text in [
+        "tell em which subjects im getting at sem 5",
+        "which subjects are there in sem 5",
+        "tell me my subjects",
+        "which subjects do i have in semester 5",
+    ]:
+        c = await p.aclassify_intent(text)
+        assert c["intent"] == "syllabus_query", f"failed for: {text}"
+    c = await p.aclassify_intent("again same")
+    assert c["intent"] == "correction"
