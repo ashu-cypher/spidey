@@ -76,7 +76,10 @@ async def set_llm_config(body: dict):
     api_key = (body.get("api_key") or "").strip()
     base_url = (body.get("base_url") or "").strip().rstrip("/")
     model = (body.get("model") or "").strip()
-    if not api_key:
+    # Pollinations (text.pollinations.ai) is keyless — allow an empty key
+    # for it; every other endpoint still requires one.
+    keyless = "pollinations.ai" in base_url
+    if not api_key and not keyless:
         return {"ok": False, "message": "API key is required."}
     if not base_url.startswith("https://"):
         return {"ok": False, "message": "Base URL must start with https://"}

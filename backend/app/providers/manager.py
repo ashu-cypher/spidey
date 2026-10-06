@@ -255,20 +255,26 @@ async def probe_provider(name: str, model: str | None = None) -> tuple[bool, str
         from app.config import settings
 
         key = settings.openai_api_key
-        if not key:
+        base = settings.openai_base_url.rstrip("/")
+        # Pollinations is keyless — probe without a key.
+        keyless = "pollinations.ai" in base
+        if not key and not keyless:
             return (
                 False,
                 "The OpenAI API key is not configured on the server "
-                "(OPENAI_API_KEY). Add it to backend/.env first.",
+                "(OPENAI_API_KEY). Add it to backend/.env first, or use "
+                "the keyless Pollinations preset in Settings → AI model.",
             )
         try:
             import httpx
 
-            base = settings.openai_base_url.rstrip("/")
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            headers = {"Authorization": f"Bearer {key}"} if key else {}
+            from app.providers.http import make_client
+
+            async with make_client(timeout=10.0) as client:
                 resp = await client.get(
                     f"{base}/models",
-                    headers={"Authorization": f"Bearer {key}"},
+                    headers=headers,
                 )
         except Exception:
             logger.warning("openai-compatible probe failed (network)")

@@ -132,7 +132,9 @@ export function ProviderPicker() {
   };
 
   const saveApiConfig = () => {
-    if (!apiKey.trim() || apiBusy) return;
+    // Pollinations is keyless — allow saving with an empty key for it.
+    const keyless = baseUrl.includes('pollinations.ai');
+    if ((!apiKey.trim() && !keyless) || apiBusy) return;
     setApiBusy(true);
     setApiMsg('');
     void fetch('/api/system/llm-config', {
@@ -266,6 +268,19 @@ export function ProviderPicker() {
             <span className="text-emerald-300">✓ API key saved.</span>
           )}
         </p>
+        <div className="mt-2">
+          <HudButton
+            variant="gold"
+            onClick={() => {
+              setApiKey('');
+              setBaseUrl('https://text.pollinations.ai/openai');
+              setApiModel('openai');
+              setApiMsg('Free preset filled in — hit Save, then switch provider to openai above and Apply. No key needed.');
+            }}
+          >
+            ⚡ Use free keyless model (Pollinations)
+          </HudButton>
+        </div>
         <div className="mt-2 space-y-2">
           <input
             type="password"
@@ -296,7 +311,7 @@ export function ProviderPicker() {
             <HudButton
               variant="primary"
               onClick={saveApiConfig}
-              disabled={apiBusy || !apiKey.trim()}
+              disabled={apiBusy || (!apiKey.trim() && !baseUrl.includes('pollinations.ai'))}
             >
               {apiBusy ? 'Saving…' : 'Save API key'}
             </HudButton>

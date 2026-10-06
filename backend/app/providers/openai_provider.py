@@ -1,6 +1,7 @@
 import json
 
 import httpx
+from app.providers.http import make_client
 
 from app.config import settings
 from app.providers.base import AIProvider, ProviderError
@@ -71,12 +72,21 @@ class OpenAIProvider(AIProvider):
         self.base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
 
     def _ensure_configured(self) -> None:
-        if not self.api_key:
+        # Pollinations (https://text.pollinations.ai) is keyless — no API
+        # key needed. Every other OpenAI-compatible endpoint requires one.
+        if not self.api_key and "pollinations.ai" not in self.base_url:
             raise ProviderError(
                 "OpenAI-compatible provider is not configured: set "
                 "OPENAI_API_KEY (use a Groq key from console.groq.com for "
-                "fast free inference)."
+                "fast free inference, or pick the keyless Pollinations "
+                "preset in Settings → AI model)."
             )
+
+    def _headers(self) -> dict:
+        # Keyless endpoints (Pollinations) get no Authorization header.
+        if self.api_key:
+            return {"Authorization": f"Bearer {self.api_key}"}
+        return {}
 
     def _endpoint(self) -> str:
         return f"{self.base_url}/chat/completions"
@@ -87,10 +97,10 @@ class OpenAIProvider(AIProvider):
         # Intent labels are language-agnostic; ``lang`` accepted for symmetry.
         self._ensure_configured()
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with make_client(timeout=30.0) as client:
                 resp = await client.post(
                     self._endpoint(),
-                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    headers=self._headers(),
                     json={
                         "model": self.model,
                         "messages": [
@@ -118,10 +128,10 @@ class OpenAIProvider(AIProvider):
         user_text = self._delimited_user_text(text, context)
         messages = self._messages(user_text, history, lang)
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with make_client(timeout=60.0) as client:
                 resp = await client.post(
                     self._endpoint(),
-                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    headers=self._headers(),
                     json={"model": self.model, "messages": messages},
                 )
                 resp.raise_for_status()
@@ -143,11 +153,11 @@ class OpenAIProvider(AIProvider):
         user_text = self._delimited_user_text(message, context)
         messages = self._messages(user_text, history, lang)
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with make_client(timeout=60.0) as client:
                 async with client.stream(
                     "POST",
                     self._endpoint(),
-                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    headers=self._headers(),
                     json={
                         "model": self.model,
                         "messages": messages,
