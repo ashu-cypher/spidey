@@ -315,13 +315,18 @@ class OllamaProvider(AIProvider):
         lang: str | None = None,
         voice_mode: bool = False,
         images: list[str] | None = None,
+        system_prompt: str | None = None,
     ) -> str:
         """Generate a reply. ``voice_mode`` (the frontend's hint that this
         reply will be spoken) instructs brevity in the system prompt.
         ``images`` (base64) is only sent when the caller verified the model
-        supports vision — see ``vision_supported``."""
+        supports vision — see ``vision_supported``. ``system_prompt``
+        overrides the built-in MEW persona prompt (used by the LLM brain,
+        which composes its own full system prompt); None keeps the default.
+        """
         messages = self._messages(
-            text, context, history, lang, voice_mode=voice_mode
+            text, context, history, lang, voice_mode=voice_mode,
+            system_prompt=system_prompt,
         )
         return await self._generate(messages, images=images)
 
@@ -348,6 +353,7 @@ class OllamaProvider(AIProvider):
         history: list | None,
         lang: str | None,
         voice_mode: bool = False,
+        system_prompt: str | None = None,
     ) -> list:
         if context:
             # Delimit agent-composed facts / document excerpts from the user
@@ -362,7 +368,14 @@ class OllamaProvider(AIProvider):
         else:
             user_text = text
         messages = [
-            {"role": "system", "content": _system_prompt_for(lang, voice_mode)}
+            {
+                "role": "system",
+                # MEW LLM brain: a caller-composed system prompt (persona +
+                # grounding + tools + context) replaces the built-in one.
+                "content": system_prompt
+                if system_prompt
+                else _system_prompt_for(lang, voice_mode),
+            }
         ]
         # Recent conversation turns so pronouns ("it", "that") resolve.
         # Rolling window is capped at 10 turns upstream — keep that cap.

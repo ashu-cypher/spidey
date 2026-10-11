@@ -8,9 +8,9 @@ import { HudButton, HudPanel } from './hud';
 // mount; PUT /api/system/provider ← { provider, model } on Apply. The
 // backend probes the candidate first, so an unreachable Ollama/OpenAI (or a
 // missing model) comes back as a human-readable 502 and nothing is
-// persisted. For Ollama, GET /api/system/models offers the live model list
-// as suggestions (falls back to free text if the endpoint/backend is not
-// there yet). Failures are shown honestly; the UI never pretends a switch
+// persisted. For Ollama, GET /api/system/ollama-models offers the live
+// model list as a dropdown (falls back to free text if the endpoint is not
+// reachable). Failures are shown honestly; the UI never pretends a switch
 // worked.
 // ---------------------------------------------------------------------------
 
@@ -199,26 +199,46 @@ export function ProviderPicker() {
             >
               Model
             </label>
-            <input
-              id="mew-model"
-              className="hud-input min-w-0 flex-1"
-              value={model}
-              disabled={saving}
-              placeholder="provider default"
-              spellCheck={false}
-              list={ollamaModels.length > 0 ? 'mew-ollama-models' : undefined}
-              onChange={(e) => {
-                setModel(e.target.value);
-                setSaved(false);
-              }}
-              title="Model name for this provider (e.g. qwen3:0.6b for Ollama). Empty = provider default."
-            />
-            {ollamaModels.length > 0 && (
-              <datalist id="mew-ollama-models">
+            {provider === 'ollama' && ollamaModels.length > 0 ? (
+              <select
+                id="mew-model"
+                className="hud-input min-w-0 flex-1"
+                value={model}
+                disabled={saving}
+                onChange={(e) => {
+                  setModel(e.target.value);
+                  setSaved(false);
+                }}
+                title="Pulled Ollama models (live from /api/tags). Apply probes the choice."
+              >
+                <option value="">provider default</option>
+                {/* Keep a saved-but-unlisted model visible so Apply can't
+                    silently switch it. */}
+                {!ollamaModels.includes(model) && model.trim() !== '' && (
+                  <option key={model} value={model}>
+                    {model} (not in live list)
+                  </option>
+                )}
                 {ollamaModels.map((m) => (
-                  <option key={m} value={m} />
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
                 ))}
-              </datalist>
+              </select>
+            ) : (
+              <input
+                id="mew-model"
+                className="hud-input min-w-0 flex-1"
+                value={model}
+                disabled={saving}
+                placeholder="provider default"
+                spellCheck={false}
+                onChange={(e) => {
+                  setModel(e.target.value);
+                  setSaved(false);
+                }}
+                title="Model name for this provider (e.g. qwen3:0.6b for Ollama). Empty = provider default."
+              />
             )}
           </div>
           {ollamaNote && (

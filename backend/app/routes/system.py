@@ -259,6 +259,14 @@ async def list_models():
     }
 
 
+@router.get("/api/system/ollama-models")
+async def list_ollama_models_endpoint():
+    """Alias of ``/api/system/models`` (MEW LLM-brain plan): the live Ollama
+    ``/api/tags`` model list the Settings UI uses for its model dropdown.
+    """
+    return await list_models()
+
+
 @router.put("/api/system/provider")
 async def set_provider_info(req: ProviderUpdate):
     """Switch the AI provider at runtime.

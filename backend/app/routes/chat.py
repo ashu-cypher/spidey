@@ -363,8 +363,11 @@ async def get_workflow(run_id: str):
         payload = get_persisted_run(run_id)
         if payload is None:
             raise HTTPException(404, "workflow not found")
-    if settings.spidey_debug:
+    if settings.spidey_debug or settings.mew_debug:
         # Phase 7 debug block: provider/model + observability counters.
+        # MEW_DEBUG=1 additionally carries the LLM brain's per-step records
+        # (USER / ACTIVE DOCUMENTS / TOOL DECISION / RETRIEVED / MODEL
+        # INPUT / MODEL OUTPUT) under payload["debug"]["brain"].
         payload["debug"] = agent.get_debug_info(run_id)
     return payload
 

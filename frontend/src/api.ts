@@ -483,13 +483,12 @@ export interface OllamaModelsInfo {
 }
 
 /**
- * GET /api/system/models — live Ollama model list (`/api/tags`).
- * The backend worker is landing this endpoint in parallel: 404/502 means
- * "no live list" and callers fall back to a free-text model field (the
- * PUT probe still validates honestly).
+ * GET /api/system/ollama-models — live Ollama model list (`/api/tags`).
+ * 404/502 means "no live list" and callers fall back to a free-text model
+ * field (the PUT probe still validates honestly).
  */
 export async function listOllamaModels(): Promise<OllamaModelsInfo> {
-  const res = await fetch('/api/system/models');
+  const res = await fetch('/api/system/ollama-models');
   return json(res);
 }
 

@@ -123,10 +123,14 @@ class OpenAIProvider(AIProvider):
         context: str = "",
         history: list | None = None,
         lang: str | None = None,
+        system_prompt: str | None = None,
     ) -> str:
+        """``system_prompt`` overrides the built-in MEW persona prompt (used
+        by the LLM brain, which composes its own full system prompt); None
+        keeps the default."""
         self._ensure_configured()
         user_text = self._delimited_user_text(text, context)
-        messages = self._messages(user_text, history, lang)
+        messages = self._messages(user_text, history, lang, system_prompt)
         try:
             async with make_client(timeout=60.0) as client:
                 resp = await client.post(
@@ -186,9 +190,19 @@ class OpenAIProvider(AIProvider):
 
     @staticmethod
     def _messages(
-        user_text: str, history: list | None, lang: str | None
+        user_text: str,
+        history: list | None,
+        lang: str | None,
+        system_prompt: str | None = None,
     ) -> list[dict]:
-        messages = [{"role": "system", "content": _system_prompt_for(lang)}]
+        # MEW LLM brain: a caller-composed system prompt (persona +
+        # grounding + tools + context) replaces the built-in one.
+        messages = [
+            {
+                "role": "system",
+                "content": system_prompt if system_prompt else _system_prompt_for(lang),
+            }
+        ]
         # Recent conversation turns so pronouns ("it", "that") resolve.
         for turn in (history or [])[-10:]:
             if not isinstance(turn, dict):

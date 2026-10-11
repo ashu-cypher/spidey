@@ -10,6 +10,7 @@ from typing import Any, Awaitable, Callable
 
 from sqlalchemy import select
 
+from app.agents.brain import MEWBrain
 from app.agents.memory_manager import MemoryManager
 from app.agents.planner import build_plan
 from app.config import settings
@@ -209,6 +210,61 @@ _LLM_PREFERRED_INTENTS = frozenset(
     }
 )
 
+# MEW LLM brain (user request 2026-10-09): natural conversation is the
+# default and the LLM is the main brain; deterministic routing exists ONLY
+# for unambiguous fast-path intents — calculator expressions, corrections,
+# explicit tasks/reminders with parseable structure, memory operations,
+# greetings/help, and identity. Everything in _BRAIN_INTENTS goes to the
+# brain when an LLM provider is configured and reachable; intents needing
+# specialized pipelines (resume analysis, file generation, research plans,
+# confirmation-gated writes, the system controller) are in NEITHER set and
+# always keep the existing path — the brain dispatches only to its four
+# read-only tools (document_search, web_search, calculator, memory_search).
+_DETERMINISTIC_INTENTS = frozenset(
+    {
+        "calculate",
+        "correction",
+        "task_create",
+        "task_list",
+        "task_complete",
+        "task_delete",
+        "reminder_create",
+        "reminder_list",
+        "reminder_complete",
+        "reminder_delete",
+        "remember",
+        "recall_memory",
+        "memory_list",
+        "memory_forget",
+        "memory_forget_all",
+        "greeting",
+        "help",
+        "who_am_i",
+        "attachment_list",
+        "attachment_delete",
+    }
+)
+
+# Intents the brain handles: open conversation plus read-only information
+# intents its four tools cover. A provider error inside the brain falls
+# back to the existing deterministic path (never a user-visible crash).
+_BRAIN_INTENTS = frozenset(
+    {
+        "chat_fallback",
+        "chat_followup",
+        "conversation_recall",
+        "document_qa",
+        "summarize_document",
+        "web_search",
+        "news",
+        "wikipedia",
+        "knowledge_search",
+        "knowledge_query",
+        "syllabus_query",
+        "code_explain",
+    }
+)
+
 # MEW capability upgrade — proactive narration: long operations emit a
 # human `tool_start` label the frontend can speak. Only real tool runs emit
 # these; no fake events.
@@ -279,6 +335,12 @@ class SpideyAgent:
         self._local_provider = RuleBasedProvider()
         self.tools = tools
         self.memory = MemoryManager(tools["memory"])
+        # MEW LLM brain: the conversational core (user request 2026-10-09).
+        self._brain = MEWBrain()
+        # run_id -> brain debug dict (USER / TOOL DECISION / RETRIEVED /
+        # MODEL INPUT / MODEL OUTPUT steps); surfaced in get_debug_info()
+        # when MEW_DEBUG=1.
+        self._brain_debug: dict[str, dict] = {}
         # token -> {"tool", "args", "message", "classification", "plan_step",
         #           "proposal", "expires_at"}
         self._pending: dict[str, dict] = {}
@@ -337,6 +399,215 @@ class SpideyAgent:
             f"Route: local rule-based (fast path: {intent}); "
             f"configured {name} not consulted"
         )
+
+    # -- MEW LLM brain ---------------------------------------------------
+
+    def _brain_eligible(self, intent: str) -> bool:
+        """True when the LLM brain should handle ``intent``.
+
+        Requires: a configured LLM provider (ollama/openai) that is not
+        degraded, and an intent the brain's four read-only tools cover.
+        Everything else — rule_based configured, degraded model,
+        deterministic intents, specialized pipelines — keeps the existing
+        path, which is exactly what all existing tests exercise.
+        """
+        if intent not in _BRAIN_INTENTS:
+            return False
+        if getattr(self._provider(), "name", "") not in LLM_PROVIDER_NAMES:
+            return False
+        from app.providers.manager import is_model_degraded
+
+        return not is_model_degraded()
+
+    async def _brain_syllabus_data(self) -> list[dict]:
+        """Compact syllabus subjects for the brain's system prompt.
+
+        Read-only; degrades to [] when no syllabus is ingested (the tool
+        raises ToolError) or on any failure — never fails the chat turn.
+        """
+        try:
+            res = await self.tools["syllabus"].execute(action="subjects")
+        except Exception:
+            return []
+        subs = (res or {}).get("subjects") or []
+        return [
+            {
+                "name": s.get("name"),
+                "code": s.get("code"),
+                "units": s.get("units"),
+                "exam_types": s.get("exam_types"),
+            }
+            for s in subs[:24]
+        ]
+
+    async def _brain_open_tasks(self) -> list[dict]:
+        """Open tasks for the brain's system prompt ("what should I work on
+        today?"). Read-only; degrades to [] on any failure."""
+        try:
+            res = await self.tools["tasks"].execute(action="list")
+        except Exception:
+            return []
+        items = (res or {}).get("tasks") or []
+        return [
+            {"title": t.get("title"), "due": t.get("due")}
+            for t in items
+            if not t.get("done")
+        ][:10]
+
+    async def _run_brain(
+        self,
+        _step,
+        message: str,
+        run,
+        engine,
+        history: list[dict],
+        lang: str,
+        classification: dict,
+        attachment_block: str,
+        conversation_id: str | None,
+    ) -> str | None:
+        """Run the LLM brain for a chat turn.
+
+        Returns the response text, or None when the brain could not run
+        (provider error) — the caller then falls through to the existing
+        deterministic path.
+        """
+        intent = classification.get("intent", "chat_fallback")
+        mems: list[dict] = []
+        if classification.get("requires_memory"):
+            mems = await _step(
+                "Retrieve memory",
+                "memory",
+                lambda: self.memory.retrieve_relevant(message),
+            )
+        syllabus_data = await self._brain_syllabus_data()
+        tasks = await self._brain_open_tasks()
+        provider = self._provider()
+
+        async def _record(name, step_type, fn, **kw):
+            return await _step(name, step_type, fn, **kw)
+
+        try:
+            final_text, debug = await self._brain.think(
+                agent=self,
+                provider=provider,
+                message=message,
+                history=history,
+                attachments=attachment_block,
+                syllabus_data=syllabus_data,
+                mems=mems,
+                tasks=tasks,
+                lang=lang,
+                run_id=run.workflow_id,
+                record_step=_record,
+            )
+        except ProviderError as exc:
+            # Graceful degradation (plan): the deterministic
+            # _compose_facts path answers instead. Never a traceback.
+            logger.info("LLM brain unavailable (%s); using deterministic path", exc)
+            return None
+        except Exception:
+            logger.exception("LLM brain failed; using deterministic path")
+            return None
+
+        self._brain_debug[run.workflow_id] = debug
+        # The brain's final answer already saw the real tool results
+        # (including URLs) as grounded context; no citation stitching
+        # needed on summarized results.
+        response = self._with_degraded_notice(final_text, conversation_id)
+        await _step(
+            "Update memory",
+            "memory_update",
+            lambda: self._update_memory(intent, message),
+        )
+        engine.finish_run(run.workflow_id, "completed", result=response)
+        return response
+
+    async def _run_brain_stream(
+        self,
+        _step,
+        message: str,
+        run,
+        engine,
+        history: list[dict],
+        lang: str,
+        classification: dict,
+        attachment_block: str,
+        conversation_id: str | None,
+        emit,
+        _done_event,
+    ) -> str | None:
+        """Streaming twin of :meth:`_run_brain`: the brain thinks (decision
+        + at most one tool round-trip), then the final text streams as
+        deltas. Returns the response, or None to fall back to the existing
+        streaming path."""
+        intent = classification.get("intent", "chat_fallback")
+        await emit("state", {"state": "thinking", "label": "MEW is thinking"})
+        mems: list[dict] = []
+        if classification.get("requires_memory"):
+            mems = await _step(
+                "Retrieve memory",
+                "memory",
+                lambda: self.memory.retrieve_relevant(message),
+            )
+        syllabus_data = await self._brain_syllabus_data()
+        tasks = await self._brain_open_tasks()
+        provider = self._provider()
+
+        async def _record(name, step_type, fn, **kw):
+            if step_type == "tool":
+                await emit(
+                    "state",
+                    {
+                        "state": "tool_start",
+                        "tool": kw.get("tool_name") or name,
+                        "label": self._tool_narration(kw.get("tool_name") or ""),
+                    },
+                )
+            return await _step(name, step_type, fn, **kw)
+
+        try:
+            final_text, debug = await self._brain.think(
+                agent=self,
+                provider=provider,
+                message=message,
+                history=history,
+                attachments=attachment_block,
+                syllabus_data=syllabus_data,
+                mems=mems,
+                tasks=tasks,
+                lang=lang,
+                run_id=run.workflow_id,
+                record_step=_record,
+            )
+        except ProviderError as exc:
+            logger.info("LLM brain unavailable (%s); using deterministic path", exc)
+            return None
+        except Exception:
+            logger.exception("LLM brain failed; using deterministic path")
+            return None
+
+        self._brain_debug[run.workflow_id] = debug
+        await emit("state", {"state": "speaking", "label": "Speaking"})
+        response = await _step(
+            "Brain: stream answer",
+            "respond",
+            lambda: self._emit_chunks(
+                self._text_chunks(
+                    self._with_degraded_notice(final_text, conversation_id)
+                ),
+                lang,
+                emit,
+            ),
+        )
+        await _step(
+            "Update memory",
+            "memory_update",
+            lambda: self._update_memory(intent, message),
+        )
+        engine.finish_run(run.workflow_id, "completed", result=response)
+        await _done_event(response)
+        return response
 
     @staticmethod
     def _tool_narration(tool_name: str) -> str:
@@ -851,12 +1122,18 @@ class SpideyAgent:
         model = getattr(self.provider, "model", None) or getattr(
             self.provider, "name", "unknown"
         )
-        return {
+        info = {
             "provider": settings.spidey_provider,
             "model": model,
             "tool_calls": tool_calls,
             "retries": retries,
         }
+        # MEW LLM brain: per-run step records (MEW_DEBUG=1) ride the debug
+        # block so GET /api/workflow/{run_id} carries them.
+        brain_dbg = self._brain_debug.get(run_id)
+        if brain_dbg:
+            info["brain"] = brain_dbg
+        return info
 
     async def _run_tool_step(
         self,
@@ -1384,6 +1661,27 @@ class SpideyAgent:
                         )
                         return response
                     vision_images = [a["data_base64"] for a in image_attachments]
+            # MEW LLM brain (user request 2026-10-09): natural conversation
+            # is the default — open/conversational intents go to the brain
+            # when an LLM provider is configured and reachable. The brain
+            # returns None on provider failure, falling through to the
+            # existing deterministic path below. Skipped when the vision
+            # gate claimed this turn (image bytes must reach the
+            # vision-capable model via _agenerate, not the brain).
+            if self._brain_eligible(intent) and not vision_images:
+                brain_response = await self._run_brain(
+                    _step,
+                    message,
+                    run,
+                    engine,
+                    history,
+                    lang,
+                    classification,
+                    attachment_block,
+                    conversation_id,
+                )
+                if brain_response is not None:
+                    return brain_response
             plan = build_plan(classification)
 
             if classification.get("requires_memory"):
@@ -1774,6 +2072,26 @@ class SpideyAgent:
                         await _done_event(full)
                         return full
                     vision_images = [a["data_base64"] for a in image_attachments]
+            # MEW LLM brain (streaming twin): same eligibility as run() —
+            # the brain thinks, then the final text streams as deltas. None
+            # falls through to the existing streaming path below. Skipped
+            # when the vision gate claimed this turn (see run()).
+            if self._brain_eligible(intent) and not vision_images:
+                brain_response = await self._run_brain_stream(
+                    _step,
+                    message,
+                    run,
+                    engine,
+                    history,
+                    lang,
+                    classification,
+                    attachment_block,
+                    conversation_id,
+                    emit,
+                    _done_event,
+                )
+                if brain_response is not None:
+                    return brain_response
             plan = build_plan(classification)
 
             if classification.get("requires_memory"):

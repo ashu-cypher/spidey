@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     database_url: str = ""
     vector_backend: str = "local"
     spidey_debug: bool = False
+    # MEW LLM brain: MEW_DEBUG=1 enables structured brain-step logs and the
+    # ``debug`` block on GET /api/workflow/{run_id}.
+    mew_debug: bool = False
     persona_name: str = "MEW"  # reads PERSONA_NAME
     # Telegram integration (spec 18-19): bot token and chat ID live ONLY
     # here (backend env), never in frontend code.
